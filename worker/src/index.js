@@ -160,8 +160,8 @@ async function minuteWork(env, st) {
 
   // statystyki dzienne z bieżącej migawki
   try { await aggregateRows(env, t, st.rows || [], distPL, roughPL) } catch (e) { }
-  // samoloty wojskowe co minutę
-  await milWork(env, true);
+  // samoloty wojskowe co 3 minuty (darmowe źródła mają limity)
+  if (minute % 3 === 0) await milWork(env, true);
 
   const notes = [];
   // wiadomości z kanałów: tłumaczenie na polski (więcej, gdy ktoś ogląda aplikację)
