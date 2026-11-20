@@ -140,7 +140,7 @@ function frame(ts) {
     cx.fillStyle = g; cx.beginPath(); cx.arc(c.x, c.y, rad, 0, 7); cx.fill();
     cx.beginPath(); cx.moveTo(c.x, c.y); cx.lineTo(c.x + Math.sin(ang * R) * rad, c.y - Math.cos(ang * R) * rad); cx.strokeStyle = `rgba(${RCOL},.8)`; cx.lineWidth = 1.5; cx.shadowColor = `rgb(${RCOL})`; cx.shadowBlur = 12; cx.stroke(); cx.shadowBlur = 0;
   }
-  drawRoute(ts);
+  drawAllTracks(); drawRoute(ts);
   for (const t of view) {
     if (t.areaOnly) continue; const col = TM(t.type).c, isSel = selected === t.id;
     const pts = (t.trail || []).map(q => map.latLngToContainerPoint([q.lat, q.lon])); const here = map.latLngToContainerPoint(t.pos); pts.push(here);
@@ -178,9 +178,46 @@ function recordObs(t) {
   const a = obs.get(t.id) || [], l = a[a.length - 1], tt = Date.parse(t.updatedAt) || Date.now();
   if (!l || km([l[1], l[2]], [t.lat, t.lon]) > .3) { a.push([tt, t.lat, t.lon]); if (a.length > 120) a.shift(); obs.set(t.id, a) }
 }
+let histMeta = new Map();
 function buildHistIndex() {
-  histIndex = new Map();
-  for (const [t, rows] of hist.snaps) for (const r of rows) { if (r[6] & 1) continue; const a = histIndex.get(r[0]) || []; const l = a[a.length - 1]; if (!l || l[1] !== r[2] || l[2] !== r[3]) a.push([t, r[2], r[3]]); histIndex.set(r[0], a) }
+  histIndex = new Map(); histMeta = new Map();
+  for (const [t, rows] of hist.snaps) for (const r of rows) {
+    if (r[6] & 1) continue; const a = histIndex.get(r[0]) || []; const l = a[a.length - 1]; if (!l || l[1] !== r[2] || l[2] !== r[3]) a.push([t, r[2], r[3]]); histIndex.set(r[0], a);
+    const m = histMeta.get(r[0]) || { type: r[1], count: 0, first: t, loc: r[7] }; m.last = t; m.count = Math.max(m.count, r[5] || 0); if (r[7]) m.loc = r[7]; histMeta.set(r[0], m)
+  }
+  renderFlights()
+}
+function flightList() {
+  const out = [];
+  const cand = [...histIndex].filter(([, pts]) => pts.length >= 2).sort((x, y) => y[1][y[1].length - 1][0] - x[1][x[1].length - 1][0]).slice(0, 40);
+  for (const [id] of cand) {
+    const all = routeFor(id); if (all.length < 3) continue;
+    let len = 0, minD = 1e9; for (let i = 1; i < all.length; i++) len += km([all[i - 1][1], all[i - 1][2]], [all[i][1], all[i][2]]);
+    const step = Math.max(1, Math.floor(all.length / 12));
+    for (let i = 0; i < all.length; i += step) { const p = [all[i][1], all[i][2]], c = km(p, [51.9, 19.1]); minD = Math.min(minD, c > 900 ? c - 330 : distPL(p)) }
+    const m = histMeta.get(id) || {};
+    out.push({ id, pts: all, type: TYPES[m.type] ? m.type : "unknown", count: m.count, loc: m.loc, first: all[0][0], last: all[all.length - 1][0], len, minD })
+  }
+  return out.sort((a, b) => b.last - a.last)
+}
+function renderFlights() {
+  const fl = flightList(); $("fl-n").textContent = fl.length ? fl.length + " tras" : "—";
+  if (!fl.length) { $("flights").innerHTML = `<span class="empty">${hist.snaps.length ? "Za mało pozycji, by narysować trasy. Trasy pojawią się, gdy obiekty będą w powietrzu dłużej niż kilka minut." : "Historia jest pusta. Serwer zapisuje pozycje co minutę od chwili wdrożenia; bez serwera historia zbiera się od otwarcia strony."}</span>`; return }
+  $("flights").innerHTML = fl.slice(0, 30).map(f => { const m = TM(f.type); return `<div class="fl" style="--c:${m.c}"><span class="ic">${icon(f.type)}</span><b>${m.n}${f.count > 1 ? " ×" + f.count : ""}</b><span>${hm(f.first)}–${hm(f.last)} · ${Math.round(f.len)} km trasy · ${f.minD < 1 ? "nad Polską" : "min. " + Math.round(f.minD) + " km od RP"}${f.loc ? " · " + esc(translit(f.loc)) : ""}</span><button class="btn pri" data-id="${esc(f.id)}">▶</button></div>` }).join("")
+}
+$("flights").addEventListener("click", e => { const b = e.target.closest("button[data-id]"); if (!b) return; const f = flightList().find(x => x.id === b.dataset.id); if (!f) return; selected = null; renderDetail(); route = { id: f.id, type: f.type, pts: f.pts }; startReplay(); if (mobile()) setSheet("peek") });
+let allTracks = !!store.get("allTracks", false); $("all-tracks").checked = allTracks;
+$("all-tracks").onchange = e => { allTracks = e.target.checked; store.set("allTracks", allTracks) };
+function drawAllTracks() {
+  if (!allTracks || !histIndex.size) return;
+  const [a] = trange();
+  for (const [id, pts] of histIndex) {
+    const P = pts.filter(p => p[0] >= a); if (P.length < 2) continue; const col = TM((histMeta.get(id) || {}).type).c;
+    const Q = P.map(p => map.latLngToContainerPoint([p[1], p[2]]));
+    cx.beginPath(); cx.moveTo(Q[0].x, Q[0].y); for (const q of Q) cx.lineTo(q.x, q.y); cx.strokeStyle = col; cx.globalAlpha = .42; cx.lineWidth = 1.6; cx.stroke();
+    const e = Q[Q.length - 1], f = Q[Q.length - 2], ang = Math.atan2(e.y - f.y, e.x - f.x);
+    cx.save(); cx.translate(e.x, e.y); cx.rotate(ang); cx.beginPath(); cx.moveTo(4, 0); cx.lineTo(-5, 4); cx.lineTo(-5, -4); cx.closePath(); cx.fillStyle = col; cx.globalAlpha = .75; cx.fill(); cx.restore(); cx.globalAlpha = 1
+  }
 }
 function mergedPts(t, since) {
   const pts = [];
@@ -208,7 +245,7 @@ function drawRoute(ts) {
   const col = TM(route.type).c, P = route.pts.map(p => map.latLngToContainerPoint([p[1], p[2]]));
   cx.setLineDash([2, 5]); cx.beginPath(); cx.moveTo(P[0].x, P[0].y); for (const q of P) cx.lineTo(q.x, q.y); cx.strokeStyle = col; cx.globalAlpha = .5; cx.lineWidth = 1.5; cx.stroke(); cx.setLineDash([]); cx.globalAlpha = 1;
   cx.beginPath(); cx.arc(P[0].x, P[0].y, 4, 0, 7); cx.strokeStyle = col; cx.lineWidth = 2; cx.stroke();
-  const PP = P(); cx.fillStyle = PP.sub; cx.font = "600 10px 'JetBrains Mono',monospace"; cx.fillText("start " + hm(route.pts[0][0]), P[0].x + 7, P[0].y - 6);
+  const PP = isLight() ? PALS.light : PALS.dark; cx.fillStyle = PP.sub; cx.font = "600 10px 'JetBrains Mono',monospace"; cx.fillText("start " + hm(route.pts[0][0]), P[0].x + 7, P[0].y - 6);
   if (!replay) return;
   const dur = replay.dur, p = Math.min(1, (ts - replay.start) / dur);
   if (ts - replay.start > dur + 1800) { replay = null; renderDetail(); return }
@@ -267,7 +304,29 @@ function recompute() {
   renderMarkers(); renderList(); renderStats(); renderDetail(); evalLevel();
 }
 const fmtAgo = iso => { const s = ((mode === "hist" ? histTime : Date.now()) - Date.parse(iso)) / 1000; if (!isFinite(s)) return ""; if (s < 60) return "przed chwilą"; if (s < 3600) return Math.round(s / 60) + " min temu"; return Math.round(s / 3600) + " godz. temu" };
-const place = o => [o.locality, o.region].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(", ");
+const OBL_PL = { "Вінницька": "winnicki", "Волинська": "wołyński", "Дніпропетровська": "dniepropetrowski", "Донецька": "doniecki", "Житомирська": "żytomierski", "Закарпатська": "zakarpacki", "Запорізька": "zaporoski", "Івано-Франківська": "iwanofrankiwski", "Київська": "kijowski", "Кіровоградська": "kirowohradzki", "Луганська": "ługański", "Львівська": "lwowski", "Миколаївська": "mikołajowski", "Одеська": "odeski", "Полтавська": "połtawski", "Рівненська": "rówieński", "Сумська": "sumski", "Тернопільська": "tarnopolski", "Харківська": "charkowski", "Херсонська": "chersoński", "Хмельницька": "chmielnicki", "Черкаська": "czerkaski", "Чернівецька": "czerniowiecki", "Чернігівська": "czernihowski" };
+const CITY_PL = { "Київ": "Kijów", "м. Київ": "Kijów", "Харків": "Charków", "Одеса": "Odessa", "Львів": "Lwów", "Дніпро": "Dniepr", "Запоріжжя": "Zaporoże", "Миколаїв": "Mikołajów", "Херсон": "Chersoń", "Чернігів": "Czernihów", "Суми": "Sumy", "Полтава": "Połtawa", "Житомир": "Żytomierz", "Рівне": "Równe", "Луцьк": "Łuck", "Тернопіль": "Tarnopol", "Хмельницький": "Chmielnicki", "Вінниця": "Winnica", "Черкаси": "Czerkasy", "Кропивницький": "Kropywnycki", "Чернівці": "Czerniowce", "Ужгород": "Użhorod", "Івано-Франківськ": "Iwano-Frankiwsk", "Ковель": "Kowel", "Біла Церква": "Biała Cerkiew", "Кременчук": "Krzemieńczuk", "Кривий Ріг": "Krzywy Róg", "Автономна Республіка Крим": "Krym", "Севастополь": "Sewastopol" };
+const TL = { а: "a", б: "b", в: "w", г: "h", ґ: "g", д: "d", е: "e", є: "je", ж: "ż", з: "z", и: "y", і: "i", ї: "ji", й: "j", к: "k", л: "ł", м: "m", н: "n", о: "o", п: "p", р: "r", с: "s", т: "t", у: "u", ф: "f", х: "ch", ц: "c", ч: "cz", ш: "sz", щ: "szcz", ю: "ju", я: "ja", ы: "y", э: "e", ё: "jo", ъ: "", "'": "", "’": "" };
+const SOFT = { н: "ń", с: "ś", ц: "ć", з: "ź", л: "l", т: "t", д: "d" };
+function translit(w) {
+  if (!w || !/[а-яіїєґё]/i.test(w)) return w || "";
+  if (CITY_PL[w]) return CITY_PL[w];
+  let out = "";
+  for (let i = 0; i < w.length; i++) {
+    const ch = w[i], lo = ch.toLowerCase(), up = ch !== lo, nx = (w[i + 1] || "").toLowerCase(), pv = (w[i - 1] || "").toLowerCase();
+    let r;
+    if (lo === "ь") continue;
+    if (nx === "ь" && SOFT[lo]) r = SOFT[lo];
+    else if (lo === "л" && /[іїєюя]/.test(nx)) r = "l";
+    else if (/[єюя]/.test(lo) && pv && /[бвгґджзклмнпрстфхцчшщ]/.test(pv)) r = { є: "ie", ю: "iu", я: "ia" }[lo];
+    else r = TL[lo] ?? ch;
+    out += up && r ? r[0].toUpperCase() + r.slice(1) : r;
+  }
+  return out
+}
+function plRegion(r) { if (!r) return ""; const m = r.match(/^(.+?) область$/); if (m) return OBL_PL[m[1]] ? "obw. " + OBL_PL[m[1]] : translit(r); return CITY_PL[r] || translit(r) }
+const plLoc = o => o.locality && o.locality !== o.region ? translit(o.locality) : "";
+const place = o => [plLoc(o), plRegion(o.region)].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(", ") || translit(o.locality || "");
 
 /* ---------- znaczniki ---------- */
 const markers = new Map(); const tkLayer = L.layerGroup().addTo(map);
@@ -319,9 +378,9 @@ function renderList() {
     return `<button class="it${hot ? " hot" : ""}${selected === o.id ? " sel" : ""}" data-id="${esc(o.id)}" style="--c:${m.c}"><span class="ic">${icon(o.type, o.hdg)}</span>
       <span class="t">${m.n}${o.count > 1 ? " ×" + o.count : ""}${o.inPL ? '<span class="tag pl">nad RP</span>' : o.toPL ? '<span class="tag pl">kurs na RP</span>' : ""}${o.advisory ? '<span class="tag adv">obserwacja</span>' : ""}</span>
       <span class="d">${o.inPL ? "0" : Math.round(o.dist)} km</span>
-      <span class="s">${esc(o.locality || o.region || "")}${o.region && o.locality && o.locality !== o.region ? " · " + esc(o.region.replace(" область", " обл.")) : ""}${o.updatedAt ? " · " + fmtAgo(o.updatedAt) : ""}</span></button>`
+      <span class="s">${esc(place(o))}${o.updatedAt ? " · " + fmtAgo(o.updatedAt) : ""}</span></button>`
   });
-  for (const o of area.slice(0, 8)) { const m = TM(o.type); rows.push(`<button class="it" data-id="${esc(o.id)}" style="--c:${m.c}"><span class="ic">${icon(o.type)}</span><span class="t">${m.n}${o.count > 1 ? " ×" + o.count : ""}<span class="tag area">tylko obwód</span></span><span class="d">—</span><span class="s">${esc(o.region)}${o.updatedAt ? " · " + fmtAgo(o.updatedAt) : ""}</span></button>`) }
+  for (const o of area.slice(0, 8)) { const m = TM(o.type); rows.push(`<button class="it" data-id="${esc(o.id)}" style="--c:${m.c}"><span class="ic">${icon(o.type)}</span><span class="t">${m.n}${o.count > 1 ? " ×" + o.count : ""}<span class="tag area">tylko obwód</span></span><span class="d">—</span><span class="s">${esc(plRegion(o.region))}${o.updatedAt ? " · " + fmtAgo(o.updatedAt) : ""}</span></button>`) }
   $("list").innerHTML = rows.join("") || '<span class="empty">Brak aktywnych zagrożeń w powietrzu.</span>';
 }
 $("list").addEventListener("click", e => { const b = e.target.closest(".it"); if (b) select(b.dataset.id) });
@@ -399,8 +458,9 @@ const refreshAlerts = () => renderAlerts(mode === "hist" ? normCompact(histAlert
 /* ---------- wiadomości ---------- */
 function renderTicker() {
   if (!messages.length) return;
-  const items = messages.slice(0, 25).map(m => `<span><time>${hm(m.date)}</time><b>${esc(m.channel)}</b>${esc(String(m.text).replace(/\s+/g, " ").slice(0, 180))}</span>`).join("");
-  $("msgs").innerHTML = messages.slice(0, 12).map(m => `<div><span>${hm(m.date)} · <b>${esc(m.channel)}</b></span>${esc(String(m.text).slice(0, 400))}</div>`).join("");
+  const tx = m => m.pl || m.text;
+  const items = messages.slice(0, 25).map(m => `<span><time>${hm(m.date)}</time><b>${esc(m.channel)}</b>${esc(String(tx(m)).replace(/\s+/g, " ").slice(0, 180))}</span>`).join("");
+  $("msgs").innerHTML = messages.slice(0, 12).map(m => `<div><span>${hm(m.date)} · <b>${esc(m.channel)}</b>${m.pl ? " · przetłumaczone" : ""}</span>${esc(String(tx(m)).slice(0, 400))}${m.pl && m.pl !== m.text ? `<details class="orig"><summary>oryginał ▸</summary>${esc(String(m.text).slice(0, 400))}</details>` : ""}</div>`).join("");
   const rail = $("rail"); rail.innerHTML = items + items; rail.style.setProperty("--dur", Math.max(40, messages.slice(0, 25).reduce((a, m) => a + Math.min(180, String(m.text).length), 0) / 9) + "s")
 }
 
@@ -447,7 +507,7 @@ setInterval(() => { $("clock").textContent = new Date().toLocaleTimeString("pl-P
 function evalLevel() {
   const act = view.filter(o => !o.areaOnly && !o.advisory && o.status !== "stale");
   const inside = act.find(o => o.inPL), close = act.find(o => o.dist < thr), toward = act.find(o => o.toPL && o.dist < thr * 2);
-  let l = 0; if (curBorder.length || close || toward) l = 1; if (inside || (close && close.toPL)) l = 2;
+  let l = 0; if (curBorder.length || close || toward || rcbActive) l = 1; if (inside || (close && close.toPL)) l = 2;
   $("level").dataset.l = l; $("level-t").textContent = ["niskie", "podwyższone", "wysokie"][l];
   if (mode !== "live" || !live.haveData) return;
   for (const o of act) {
@@ -508,9 +568,53 @@ async function connect() {
 }
 async function pollAlerts() { if (source === "worker") return; try { live.alerts = await fetchJSON(API + "/api/v1/alerts"); if (mode === "live") refreshAlerts() } catch (e) { } }
 async function pollMsgs() {
-  try { const j = await fetchJSON(API + "/api/v1/messages"); messages = j.messages || []; renderTicker(); return } catch (e) { }
-  if (WORKER) try { const j = await fetchJSON(WORKER + "/api/messages"); if (j.messages && j.messages.length) { messages = j.messages; renderTicker() } } catch (e) { }
+  // najpierw z serwera (z tłumaczeniem na polski), potem prosto z NEPTUN
+  if (WORKER) try { const j = await fetchJSON(WORKER + "/api/messages"); if (j.messages && j.messages.length && Date.now() - j.t < 10 * 60000) { messages = j.messages; renderTicker(); return } } catch (e) { }
+  try { const j = await fetchJSON(API + "/api/v1/messages"); messages = j.messages || []; renderTicker() } catch (e) { }
 }
+
+/* ---------- alerty RCB ---------- */
+let rcbState = { items: [] }, rcbActive = false;
+function renderRcb() {
+  const items = rcbState.items || [];
+  if (!WORKER) { $("rcb").innerHTML = '<span class="empty">Alerty RCB są dostępne, gdy działa serwer aplikacji.</span>'; return }
+  if (!items.length) { $("rcb").innerHTML = '<span class="empty">Brak alertów RCB z ostatnich dni.</span>'; $("rcb-n").textContent = "—"; return }
+  const today = new Date().toISOString().slice(0, 10);
+  const it = items[0], ups = it.updates || [], cur = ups.find(u => u.time) || ups[0] || {};
+  const lv = it.date === today ? (cur.level ?? 1) : 0;
+  rcbActive = it.date === today && lv === 2;
+  $("rcb-n").textContent = it.date === today ? "dziś" : it.date.split("-").reverse().join(".");
+  const upd = u => `<div><time>${u.time ? "godz. " + u.time : "pierwszy komunikat"}</time><q>${esc(u.text || "")}</q>${u.voiv && u.voiv.length ? `<span>Woj.: ${esc(u.voiv.join(", "))}</span>` : ""}</div>`;
+  $("rcb").innerHTML = `<div class="rcb l${lv}"><div class="rt"><b>${esc(it.title)}</b><time>${cur.time ? "godz. " + cur.time : esc(it.date)}</time></div>
+    ${cur.text ? `<q>${esc(cur.text)}</q>` : ""}
+    ${cur.voiv && cur.voiv.length ? `<div class="vo">${cur.voiv.map(v => `<span>woj. ${esc(v)}</span>`).join("")}</div>` : ""}
+    ${ups.length > 1 ? `<details><summary>Wcześniejsze komunikaty (${ups.length - 1})</summary>${ups.filter(u => u !== cur).map(upd).join("")}</details>` : ""}
+    <a href="${esc(it.url)}" target="_blank" rel="noopener">Pełna treść na gov.pl ↗</a></div>
+    ${items.slice(1, 4).map(o => `<a class="nw" style="border-left-color:var(--dim)" href="${esc(o.url)}" target="_blank" rel="noopener"><b>${esc(o.title)}</b><span>${esc(o.date.split("-").reverse().join("."))}</span></a>`).join("")}`;
+  if (it.date === today && cur.text) addEvent(lv, "Alert RCB" + (cur.time ? " (" + cur.time + ")" : ""), cur.text + (cur.voiv && cur.voiv.length ? " Woj.: " + cur.voiv.join(", ") + "." : ""), "rcb:" + it.id + ":" + (cur.time || "0"));
+  evalLevel()
+}
+async function pollRcb() { if (!WORKER) { renderRcb(); return } try { rcbState = await fetchJSON(WORKER + "/api/rcb"); renderRcb() } catch (e) { } }
+
+/* ---------- zdarzenia w Polsce (media) ---------- */
+let newsState = { items: [] }; const newsLayer = L.layerGroup().addTo(map);
+const BURST = '<svg viewBox="0 0 24 24"><path fill="#ff7a00" stroke="#fff" stroke-width="1" d="M12 1.5l2.2 5.6 5.4-2.6-2.4 5.5 5.3 2.2-5.6 2 2.6 5.5-5.6-2.5L12 22.5l-1.9-5.3-5.6 2.5 2.6-5.5-5.6-2 5.3-2.2L4.4 4.5l5.4 2.6z"/></svg>';
+function renderNews() {
+  const items = (newsState.items || []).filter(n => n.t > Date.now() - 72 * 3600e3);
+  $("news-n").textContent = items.length ? items.length + " z 72 h" : "—";
+  if (!WORKER) { $("news").innerHTML = '<span class="empty">Doniesienia są dostępne, gdy działa serwer aplikacji.</span>'; return }
+  $("news").innerHTML = items.length ? items.slice(0, 15).map(n => `<a class="nw" href="${esc(n.link)}" target="_blank" rel="noopener"><b>${esc(n.title)}</b><span>${new Date(n.t).toLocaleString("pl-PL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })} · ${esc(n.src)}${n.place ? ` · <span class="pin">📍 ${esc(n.place.name)}</span>` : ""}</span></a>`).join("") : '<span class="empty">Brak doniesień o zdarzeniach w Polsce z ostatnich 72 godzin.</span>';
+  newsLayer.clearLayers(); const seen = new Set();
+  for (const n of items) {
+    if (!n.place || n.t < Date.now() - 48 * 3600e3) continue; const k = n.place.name; if (seen.has(k)) continue; seen.add(k);
+    const same = items.filter(x => x.place && x.place.name === k);
+    L.marker([n.place.lat, n.place.lon], { zIndexOffset: 1500, keyboard: false, icon: L.divIcon({ className: "", html: `<div class="burst">${BURST}</div>`, iconSize: [30, 30], iconAnchor: [15, 15] }) })
+      .bindTooltip(`<b>${esc(k)}: doniesienia mediów</b>${same.slice(0, 3).map(x => `<br>• ${esc(x.title)} <span style="color:var(--muted)">(${esc(x.src)}, ${hm(x.t)})</span>`).join("")}<br><span style="color:var(--muted)">Kliknij, aby otworzyć artykuł</span>`, { className: "tip", direction: "top", offset: [0, -12] })
+      .on("click", () => window.open(n.link, "_blank", "noopener")).addTo(newsLayer);
+  }
+  for (const n of items) if (n.t > Date.now() - 6 * 3600e3) addEvent(1, "Doniesienie: " + n.title, n.src + (n.place ? " · " + n.place.name : "") + ". Informacja mediów, niepotwierdzona.", "news:" + n.id, n.place ? [n.place.lat, n.place.lon] : null);
+}
+async function pollNews() { if (!WORKER) { renderNews(); return } try { newsState = await fetchJSON(WORKER + "/api/news"); renderNews() } catch (e) { } }
 
 /* ---------- oś czasu ---------- */
 // migawka: [t, [[id,typ,lat,lon,kurs,liczba,flagi,miejsce], ...]]; alarmy: [t, {r:[], o:[], b:[]}]
@@ -665,7 +769,7 @@ let toastT; function toast(msg) { const t = $("toast"); t.textContent = msg; t.h
 const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
 const pushOK = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
-const PREFS = ["inPL", "near", "toward", "border"];
+const PREFS = ["inPL", "near", "toward", "border", "rcb", "news"];
 const savedPrefs = store.get("prefs", {}); for (const k of PREFS) if (savedPrefs[k] === false) $("p-" + k).checked = false;
 const prefs = () => ({ thr, ...Object.fromEntries(PREFS.map(k => [k, $("p-" + k).checked])) });
 function pushStatus(text, cls = "") { const p = $("push-status"); p.textContent = text; p.className = "note " + cls }
@@ -778,6 +882,9 @@ document.addEventListener("keydown", e => { if (e.key === "Escape" && selected) 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").then(r => { swReg = r; initPush() }).catch(() => initPush()); else initPush();
 setTheme(themeSetting());
 checkServer(); setInterval(checkServer, 120000);
+pollRcb(); setInterval(() => { if (!document.hidden) pollRcb() }, 60000);
+pollNews(); setInterval(() => { if (!document.hidden) pollNews() }, 120000);
+setInterval(() => { if (!document.hidden) renderFlights() }, 60000);
 connect();
 pollAlerts(); pollMsgs();
 setInterval(() => { if (!document.hidden) pollAlerts() }, 30000);

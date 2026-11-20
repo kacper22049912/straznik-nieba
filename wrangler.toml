@@ -19,3 +19,7 @@ crons = ["* * * * *"]
 binding = "DB"
 database_name = "straznik-nieba"
 database_id = "acb79c55-e5d5-4aaf-af48-ce11563e0207"
+
+# Workers AI: tłumaczenie wiadomości z kanałów monitoringu na polski
+[ai]
+binding = "AI"

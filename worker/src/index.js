@@ -4,6 +4,9 @@
 // Push jest wysyłany bez treści (bez szyfrowania payloadu); service worker na telefonie
 // po otrzymaniu sygnału pobiera treść z /api/inbox i pokazuje powiadomienie.
 import { PL } from "./pl.js";
+import { fetchRcb } from "./rcb.js";
+import { fetchNews } from "./news.js";
+import { translateMessages } from "./translate.js";
 
 const API = "https://neptun.in.ua";
 const UA = "StraznikNieba/1.0 (+https://kacper22049912.github.io/straznik-nieba/)";
@@ -69,11 +72,12 @@ const SCHEMA = [
   "CREATE TABLE IF NOT EXISTS snaps(t INTEGER PRIMARY KEY, d TEXT)",
   "CREATE TABLE IF NOT EXISTS alerts_log(t INTEGER PRIMARY KEY, d TEXT)",
   "CREATE INDEX IF NOT EXISTS inbox_sub ON inbox(sub_id)",
+  "CREATE TABLE IF NOT EXISTS tr(h TEXT PRIMARY KEY, pl TEXT, t INTEGER)",
 ];
 let schemaReady = false;
 async function ensureSchema(env) { if (schemaReady) return; await env.DB.batch(SCHEMA.map(s => env.DB.prepare(s))); schemaReady = true }
 async function subId(endpoint) { const h = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(endpoint)); return b64u(h).slice(0, 22) }
-const DEFAULT_PREFS = { thr: 100, inPL: true, near: true, toward: true, border: true };
+const DEFAULT_PREFS = { thr: 100, inPL: true, near: true, toward: true, border: true, rcb: true, news: true };
 
 /* ---------- pobieranie z NEPTUN ---------- */
 async function neptun(env, path) {
@@ -83,77 +87,99 @@ async function neptun(env, path) {
 }
 
 /* ---------- zadanie co minutę ---------- */
+const kvGet = async (env, k) => { const r = await env.DB.prepare("SELECT v FROM kv WHERE k=?").bind(k).first(); return r ? JSON.parse(r.v) : null };
+const kvPut = (env, k, v) => env.DB.prepare("INSERT OR REPLACE INTO kv(k,v) VALUES(?,?)").bind(k, JSON.stringify(v));
+
 async function tick(env) {
   await ensureSchema(env);
-  const now = Date.now(), t = Math.floor(now / 60000) * 60000;
+  const now = Date.now(), t = Math.floor(now / 60000) * 60000, minute = new Date(t).getUTCMinutes();
   const [th, al, ms] = await Promise.all([neptun(env, "/api/v1/threats"), neptun(env, "/api/v1/alerts").catch(() => null), neptun(env, "/api/v1/messages").catch(() => null)]);
   const threats = th.threats || [];
-  const stmts = [];
-  if (ms && Array.isArray(ms.messages)) stmts.push(env.DB.prepare("INSERT OR REPLACE INTO kv(k,v) VALUES('msgs',?)").bind(JSON.stringify({ t: now, messages: ms.messages.slice(0, 40) })));
-  stmts.push(env.DB.prepare("INSERT OR REPLACE INTO kv(k,v) VALUES('status',?)").bind(JSON.stringify({ lastRun: now, ok: true, threats: threats.length })));
 
-  // migawka do osi czasu: [id, typ, lat, lon, kurs, liczba, flagi, miejsce]
-  const rows = threats.filter(x => x.status !== "resolved").map(x => [x.id, x.type, +(+x.lat).toFixed(3), +(+x.lon).toFixed(3), x.heading ?? null, x.count || 0,
+  // 1) najpierw zapis historii: migawka [id, typ, lat, lon, kurs, liczba, flagi, miejsce]
+  const rows = threats.filter(x => x.status !== "resolved" && x.lat != null).map(x => [x.id, x.type, +(+x.lat).toFixed(3), +(+x.lon).toFixed(3), x.heading ?? null, x.count || 0,
     (x.areaOnly ? 1 : 0) | (x.advisory ? 2 : 0) | (x.status === "stale" ? 4 : 0), x.locality || x.region || ""]);
-  stmts.push(env.DB.prepare("INSERT OR REPLACE INTO snaps(t,d) VALUES(?,?)").bind(t, JSON.stringify(rows)));
-  stmts.push(env.DB.prepare("INSERT OR REPLACE INTO kv(k,v) VALUES('live',?)").bind(JSON.stringify({ t: now, threats, alerts: al })));
-
-  // alarmy: zapis tylko przy zmianie
+  const core = [
+    env.DB.prepare("INSERT OR REPLACE INTO snaps(t,d) VALUES(?,?)").bind(t, JSON.stringify(rows)),
+    kvPut(env, "live", { t: now, threats, alerts: al }),
+    kvPut(env, "status", { lastRun: now, ok: true, threats: threats.length }),
+  ];
   let borderNow = [];
   if (al) {
     borderNow = [...(al.raions || []), ...(al.oblasts || [])].filter(a => BORDER_OBL.includes(a.oblast) || BORDER_OBL.includes(a.name));
-    const compact = { r: (al.raions || []).map(a => a.key).sort(), o: (al.oblasts || []).map(a => a.key).sort(), b: borderNow.map(a => a.name).sort() };
-    const s = JSON.stringify(compact);
+    const compact = JSON.stringify({ r: (al.raions || []).map(a => a.key).sort(), o: (al.oblasts || []).map(a => a.key).sort(), b: borderNow.map(a => a.name).sort() });
     const prev = await env.DB.prepare("SELECT d FROM alerts_log ORDER BY t DESC LIMIT 1").first();
-    if (!prev || prev.d !== s) stmts.push(env.DB.prepare("INSERT OR REPLACE INTO alerts_log(t,d) VALUES(?,?)").bind(t, s));
+    if (!prev || prev.d !== compact) core.push(env.DB.prepare("INSERT OR REPLACE INTO alerts_log(t,d) VALUES(?,?)").bind(t, compact));
+  }
+  if (minute === 0) core.push(
+    env.DB.prepare("DELETE FROM snaps WHERE t < ?").bind(now - 48 * 3600e3),
+    env.DB.prepare("DELETE FROM alerts_log WHERE t < ? AND t <> (SELECT MAX(t) FROM alerts_log)").bind(now - 48 * 3600e3),
+    env.DB.prepare("DELETE FROM sent WHERE t < ?").bind(now - 12 * 3600e3),
+    env.DB.prepare("DELETE FROM inbox WHERE t < ?").bind(now - 3600e3),
+    env.DB.prepare("DELETE FROM tr WHERE t < ?").bind(now - 3 * 864e5));
+  await env.DB.batch(core);
+
+  // 2) dodatki; błąd jednego nie blokuje pozostałych
+  const notes = [];   // ogólne komunikaty do wysłania wszystkim: {key, pref, msg}
+  if (ms && Array.isArray(ms.messages)) {
+    try { const tr = await translateMessages(env, ms.messages.slice(0, 30), 8); await kvPut(env, "msgs", { t: now, messages: tr }).run() }
+    catch (e) { await kvPut(env, "msgs", { t: now, messages: ms.messages.slice(0, 30) }).run() }
+  }
+  if (minute % 2 === 0) {
+    try {
+      const prev = await kvGet(env, "rcb"), rcb = await fetchRcb(prev); await kvPut(env, "rcb", rcb).run();
+      const today = new Date().toISOString().slice(0, 10);
+      for (const it of rcb.items) {
+        if (it.date !== today || !it.updates.length) continue;
+        const u = it.updates.find(x => x.time) || it.updates[0];
+        notes.push({ key: "rcb:" + it.id + ":" + (u.time || "0"), pref: "rcb", msg: { title: (u.level === 2 ? "🚨 " : "📢 ") + it.title, body: (u.text || "") + (u.voiv.length ? " Woj.: " + u.voiv.join(", ") + "." : ""), tag: "rcb-" + it.id, level: u.level } });
+      }
+    } catch (e) { await kvPut(env, "rcb_err", { t: now, error: String(e.message || e) }).run().catch(() => { }) }
+  }
+  if (minute % 3 === 1) {
+    try {
+      const prev = await kvGet(env, "news"), news = await fetchNews(prev); await kvPut(env, "news", news).run();
+      for (const n of news.items) if (n.t > now - 3 * 3600e3) notes.push({ key: "news:" + n.id, pref: "news", msg: { title: "📰 " + n.title, body: `${n.src}${n.place ? " · " + n.place.name : ""}. Doniesienie mediów.`, tag: "news-" + n.id, level: 1, ll: n.place ? [n.place.lat, n.place.lon] : null } });
+    } catch (e) { }
   }
 
-  // fakty o obiektach z pozycją
+  // 3) powiadomienia push
   const facts = [];
   for (const x of threats) {
     if (x.areaOnly || x.advisory || x.status === "resolved" || x.status === "stale" || x.lat == null) continue;
     const p = predict(x, now);
-    // szybki odsiew: dalej niż ~900 km od Polski nie liczymy dokładnie
     if (km(p.pos, [51.9, 19.1]) > 1250) continue;
     const dist = distPL(p.pos);
     facts.push({ x, pos: p.pos, hdg: p.hdg, speed: p.speed, dist, inPL: dist === 0, toPL: towardPL(p.pos, p.hdg) });
   }
-
   const subs = (await env.DB.prepare("SELECT id, sub, prefs FROM subs").all()).results || [];
-  if (subs.length && (facts.length || borderNow.length)) {
-    const sentRows = (await env.DB.prepare("SELECT sub_id, key FROM sent WHERE t > ?").bind(now - 12 * 3600e3).all()).results || [];
-    const sent = new Set(sentRows.map(r => r.sub_id + "|" + r.key));
-    const keys = await vapid(env);
-    for (const s of subs) {
-      const prefs = { ...DEFAULT_PREFS, ...JSON.parse(s.prefs || "{}") };
-      const msgs = [];
-      const once = (key, msg) => { if (!sent.has(s.id + "|" + key)) { sent.add(s.id + "|" + key); msgs.push(msg); stmts.push(env.DB.prepare("INSERT OR REPLACE INTO sent(sub_id,key,t) VALUES(?,?,?)").bind(s.id, key, now)) } };
-      for (const f of facts) {
-        const name = TYPE_PL[f.x.type] || TYPE_PL.unknown, cnt = f.x.count > 1 ? ` ×${f.x.count}` : "";
-        const where = [f.x.locality, f.x.region].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(", ");
-        if (f.inPL && prefs.inPL) once("in:" + f.x.id, { title: `🚨 ${name}${cnt} nad Polską`, body: `Okolice m. ${nearestCity(f.pos)}. Słuchaj komunikatów RCB.`, tag: "in-" + f.x.id, level: 2, ll: f.pos });
-        else if (f.dist < prefs.thr && prefs.near) once("near" + prefs.thr + ":" + f.x.id, { title: `⚠️ ${name}${cnt} ${Math.round(f.dist)} km od granicy`, body: `${where}${f.toPL ? ". Kurs w stronę Polski" : ""}${f.speed ? `, ${Math.round(f.speed)} km/h` : ""}.`, tag: "near-" + f.x.id, level: f.toPL ? 2 : 1, ll: f.pos });
-        else if (f.toPL && f.dist < prefs.thr * 2 && prefs.toward) once("tow:" + f.x.id, { title: `↗ ${name}${cnt} leci w stronę Polski`, body: `${where}, ${Math.round(f.dist)} km od granicy.`, tag: "tow-" + f.x.id, level: 1, ll: f.pos });
-      }
-      if (prefs.border) for (const a of borderNow) once("al:" + a.key + ":" + a.since, { title: "🔴 Alarm lotniczy przy granicy RP", body: `${a.name}${a.oblast && a.oblast !== a.name ? " (" + a.oblast + ")" : ""}`, tag: "al-" + a.key, level: 1 });
-      if (!msgs.length) continue;
-      for (const m of msgs) stmts.push(env.DB.prepare("INSERT INTO inbox(sub_id,t,msg) VALUES(?,?,?)").bind(s.id, now, JSON.stringify(m)));
-      try {
-        const st = await sendPush(JSON.parse(s.sub), keys, env);
-        if (st === 404 || st === 410) stmts.push(env.DB.prepare("DELETE FROM subs WHERE id=?").bind(s.id));
-        else if (st < 300) stmts.push(env.DB.prepare("UPDATE subs SET last_ok=? WHERE id=?").bind(now, s.id));
-      } catch (e) { /* nieudany push nie zatrzymuje reszty */ }
+  if (!subs.length || !(facts.length || borderNow.length || notes.length)) return;
+  const stmts = [];
+  const sentRows = (await env.DB.prepare("SELECT sub_id, key FROM sent WHERE t > ?").bind(now - 12 * 3600e3).all()).results || [];
+  const sent = new Set(sentRows.map(r => r.sub_id + "|" + r.key));
+  const keys = await vapid(env);
+  for (const s of subs) {
+    const prefs = { ...DEFAULT_PREFS, ...JSON.parse(s.prefs || "{}") };
+    const msgs = [];
+    const once = (key, msg) => { if (!sent.has(s.id + "|" + key)) { sent.add(s.id + "|" + key); msgs.push(msg); stmts.push(env.DB.prepare("INSERT OR REPLACE INTO sent(sub_id,key,t) VALUES(?,?,?)").bind(s.id, key, now)) } };
+    for (const f of facts) {
+      const name = TYPE_PL[f.x.type] || TYPE_PL.unknown, cnt = f.x.count > 1 ? ` ×${f.x.count}` : "";
+      const where = [f.x.locality, f.x.region].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(", ");
+      if (f.inPL && prefs.inPL) once("in:" + f.x.id, { title: `🚨 ${name}${cnt} nad Polską`, body: `Okolice m. ${nearestCity(f.pos)}. Słuchaj komunikatów RCB.`, tag: "in-" + f.x.id, level: 2, ll: f.pos });
+      else if (f.dist < prefs.thr && prefs.near) once("near" + prefs.thr + ":" + f.x.id, { title: `⚠️ ${name}${cnt} ${Math.round(f.dist)} km od granicy`, body: `${where}${f.toPL ? ". Kurs w stronę Polski" : ""}${f.speed ? `, ${Math.round(f.speed)} km/h` : ""}.`, tag: "near-" + f.x.id, level: f.toPL ? 2 : 1, ll: f.pos });
+      else if (f.toPL && f.dist < prefs.thr * 2 && prefs.toward) once("tow:" + f.x.id, { title: `↗ ${name}${cnt} leci w stronę Polski`, body: `${where}, ${Math.round(f.dist)} km od granicy.`, tag: "tow-" + f.x.id, level: 1, ll: f.pos });
     }
+    if (prefs.border) for (const a of borderNow) once("al:" + a.key + ":" + a.since, { title: "🔴 Alarm lotniczy przy granicy RP", body: `${a.name}${a.oblast && a.oblast !== a.name ? " (" + a.oblast + ")" : ""}`, tag: "al-" + a.key, level: 1 });
+    for (const n of notes) if (prefs[n.pref] !== false) once(n.key, n.msg);
+    if (!msgs.length) continue;
+    for (const m of msgs) stmts.push(env.DB.prepare("INSERT INTO inbox(sub_id,t,msg) VALUES(?,?,?)").bind(s.id, now, JSON.stringify(m)));
+    try {
+      const st = await sendPush(JSON.parse(s.sub), keys, env);
+      if (st === 404 || st === 410) stmts.push(env.DB.prepare("DELETE FROM subs WHERE id=?").bind(s.id));
+      else if (st < 300) stmts.push(env.DB.prepare("UPDATE subs SET last_ok=? WHERE id=?").bind(now, s.id));
+    } catch (e) { /* nieudany push nie zatrzymuje reszty */ }
   }
-
-  // sprzątanie raz na godzinę
-  if (new Date(t).getUTCMinutes() === 0) {
-    stmts.push(env.DB.prepare("DELETE FROM snaps WHERE t < ?").bind(now - 48 * 3600e3));
-    stmts.push(env.DB.prepare("DELETE FROM alerts_log WHERE t < ? AND t <> (SELECT MAX(t) FROM alerts_log)").bind(now - 48 * 3600e3));
-    stmts.push(env.DB.prepare("DELETE FROM sent WHERE t < ?").bind(now - 12 * 3600e3));
-    stmts.push(env.DB.prepare("DELETE FROM inbox WHERE t < ?").bind(now - 3600e3));
-  }
-  await env.DB.batch(stmts);
+  if (stmts.length) await env.DB.batch(stmts);
 }
 
 /* ---------- HTTP ---------- */
@@ -162,7 +188,7 @@ const json = (d, s = 200, extra = {}) => new Response(JSON.stringify(d), { statu
 async function body(req) { try { return await req.json() } catch { return {} } }
 function cleanPrefs(p = {}) {
   const thr = [25, 50, 100, 150, 250].includes(+p.thr) ? +p.thr : 100;
-  return { thr, inPL: p.inPL !== false, near: p.near !== false, toward: p.toward !== false, border: p.border !== false };
+  return { thr, inPL: p.inPL !== false, near: p.near !== false, toward: p.toward !== false, border: p.border !== false, rcb: p.rcb !== false, news: p.news !== false };
 }
 
 async function handle(req, env) {
@@ -193,6 +219,8 @@ async function handle(req, env) {
     const st = await env.DB.prepare("SELECT v FROM kv WHERE k='status'").first();
     return json({ ok: true, now: Date.now(), lastSnapshot: last && last.t, snapshots: last && last.n, ...(st ? JSON.parse(st.v) : {}) });
   }
+  if (path === "/api/rcb") return json((await kvGet(env, "rcb")) || { t: 0, items: [] }, 200, { "Cache-Control": "public, max-age=30" });
+  if (path === "/api/news") return json((await kvGet(env, "news")) || { t: 0, items: [] }, 200, { "Cache-Control": "public, max-age=60" });
   if (path === "/api/messages") {
     const row = await env.DB.prepare("SELECT v FROM kv WHERE k='msgs'").first();
     return json(row ? JSON.parse(row.v) : { t: 0, messages: [] }, 200, { "Cache-Control": "public, max-age=15" });
