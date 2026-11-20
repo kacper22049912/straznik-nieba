@@ -1,46 +1,31 @@
 // Statystyki dzienne (czas polski): unikalne obiekty wg typu, aktywność w godzinach, najbliższe podejście do RP,
-// mapa cieplna tras (komórki 0,25°) i zdarzenia w Polsce. Liczone przyrostowo z migawek historii,
-// po 20 migawek na uruchomienie, więc dane sprzed wdrożenia też zostaną policzone (z ostatnich 7 dni).
+// mapa cieplna tras (komórki 0,25°) i zdarzenia w Polsce. Liczone co minutę z bieżącej migawki; przechowywane 90 dni.
 export const dayKey = t => new Date(t).toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
 const hourOf = t => +new Date(t).toLocaleString("en-GB", { timeZone: "Europe/Warsaw", hour: "2-digit", hour12: false }).slice(0, 2) % 24;
 const blank = day => ({ day, n: 0, ids: {}, hours: Array(24).fill(0), heat: {}, minD: null, pl: {} });
 
-export async function aggregate(env, distFn, roughFn, batch = 20) {
-  const cur = await env.DB.prepare("SELECT v FROM kv WHERE k='aggCursor'").first();
-  let cursor = cur ? JSON.parse(cur.v).t : 0;
-  const rows = (await env.DB.prepare("SELECT t, d FROM snaps WHERE t > ? ORDER BY t LIMIT ?").bind(cursor, batch).all()).results || [];
-  if (!rows.length) return 0;
-  const days = new Map();
-  const get = async day => {
-    if (days.has(day)) return days.get(day);
-    const r = await env.DB.prepare("SELECT d FROM agg WHERE day=?").bind(day).first();
-    const a = r ? JSON.parse(r.d) : blank(day); days.set(day, a); return a;
-  };
-  for (const { t, d } of rows) {
-    const a = await get(dayKey(t)), h = hourOf(t); a.n++;
-    let simult = 0;
-    for (const r of JSON.parse(d)) {
-      const [id, type, lat, lon, , count, f, loc] = r;
-      if (f & 2) continue;                       // obserwacja (np. start MiG-31K), nie zagrożenie
-      const c = count > 1 ? count : 1; simult += c;
-      const e = a.ids[id] || (a.ids[id] = [type, c, null]); if (c > e[1]) e[1] = c;
-      if (f & 1 || lat == null) continue;        // tylko obwód, bez pozycji
-      const k = Math.floor(lat * 4) + "," + Math.floor(lon * 4); a.heat[k] = (a.heat[k] || 0) + 1;
-      // odległość od RP: najpierw zgrubnie, dokładnie tylko gdy może poprawić dzienne minimum
-      const rough = roughFn([lat, lon]);
-      if (rough < 700 && (!a.minD || rough - 60 < a.minD.d)) {
-        const dist = Math.round(distFn([lat, lon]));
-        if (e[2] == null || dist < e[2]) e[2] = dist;
-        if (!a.minD || dist < a.minD.d) a.minD = { d: dist, t, type, loc };
-      }
+// jedna migawka na minutę (wywoływane z zadania co minutę)
+export async function aggregateRows(env, t, rows, distFn, roughFn) {
+  const day = dayKey(t), h = hourOf(t);
+  const r0 = await env.DB.prepare("SELECT d FROM agg WHERE day=?").bind(day).first();
+  const a = r0 ? JSON.parse(r0.d) : blank(day); a.n++;
+  let simult = 0;
+  for (const r of rows) {
+    const [id, type, lat, lon, , count, f, loc] = r;
+    if (f & 2) continue;
+    const c = count > 1 ? count : 1; simult += c;
+    const e = a.ids[id] || (a.ids[id] = [type, c, null]); if (c > e[1]) e[1] = c;
+    if (f & 1 || lat == null) continue;
+    const k = Math.floor(lat * 4) + "," + Math.floor(lon * 4); a.heat[k] = (a.heat[k] || 0) + 1;
+    const rough = roughFn([lat, lon]);
+    if (rough < 700 && (!a.minD || rough - 60 < a.minD.d)) {
+      const dist = Math.round(distFn([lat, lon]));
+      if (e[2] == null || dist < e[2]) e[2] = dist;
+      if (!a.minD || dist < a.minD.d) a.minD = { d: dist, t, type, loc };
     }
-    if (simult > a.hours[h]) a.hours[h] = simult;
-    cursor = t;
   }
-  const stmts = [...days.values()].map(a => env.DB.prepare("INSERT OR REPLACE INTO agg(day, d) VALUES(?,?)").bind(a.day, JSON.stringify(a)));
-  stmts.push(env.DB.prepare("INSERT OR REPLACE INTO kv(k,v) VALUES('aggCursor',?)").bind(JSON.stringify({ t: cursor })));
-  await env.DB.batch(stmts);
-  return rows.length;
+  if (simult > a.hours[h]) a.hours[h] = simult;
+  await env.DB.prepare("INSERT OR REPLACE INTO agg(day, d) VALUES(?,?)").bind(day, JSON.stringify(a)).run();
 }
 
 // zdarzenia w Polsce (upadki/wybuchy z mediów) dopisywane do dnia, w którym się ukazały

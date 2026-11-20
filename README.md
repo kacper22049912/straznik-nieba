@@ -41,6 +41,7 @@ Lokalnie: `npm install`, potem `npm run dev`.
 - Alerty RCB: [gov.pl/web/rcb](https://www.gov.pl/web/rcb)
 - Doniesienia o zdarzeniach w Polsce: kanały RSS TVN24, RMF24, Polsat News
 - Położenie wsi: [OpenStreetMap](https://www.openstreetmap.org/copyright) (Nominatim), miasta: [GeoNames](https://www.geonames.org/) (CC BY 4.0)
+- Samoloty wojskowe: [adsb.fi](https://adsb.fi/) (zapasowo [adsb.lol](https://adsb.lol/)), tylko samoloty nadające ADS-B
 - Granice: Natural Earth; ikony zdarzeń: [Tabler Icons](https://tabler.io/icons) (MIT)
 
 ## Ważne

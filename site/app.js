@@ -57,7 +57,7 @@ const PALS = {
 const P = () => isLight() ? PALS.light : PALS.dark;
 const icon = (t, rot) => `<svg viewBox="0 0 24 24"${rot != null ? ` style="transform:rotate(${Math.round(rot)}deg)"` : ""}>${SVG[t] || SVG.unknown}</svg>`;
 $("legend-rows").innerHTML = Object.entries(TYPES).map(([k, m]) => `<div><span style="color:${m.c}">${icon(k)}</span>${m.n}</div>`).join("");
-setTimeout(() => { $("legend-rows").innerHTML += ["missile", "drone", "explosion", "debris"].map(k => `<div><span style="color:${INC[k].c}">${incIcon(k)}</span>W Polsce: ${INC[k].n.toLowerCase()}</div>`).join("") }, 0);
+setTimeout(() => { $("legend-rows").innerHTML += ["missile", "drone", "explosion", "debris"].map(k => `<div><span style="color:${INC[k].c}">${incIcon(k)}</span>W Polsce: ${INC[k].n.toLowerCase()}</div>`).join("") + `<div><span style="color:#4f9dff">${JET}</span>Samolot wojskowy (ADS-B)</div>` }, 0);
 
 /* ---------- mapa ---------- */
 const map = L.map("map", { zoomSnap: .25, minZoom: 4, maxZoom: 11, zoomControl: false, attributionControl: false, preferCanvas: true, maxBounds: [[40, 5], [63, 47]] });
@@ -145,7 +145,7 @@ function frame(ts) {
     cx.fillStyle = g; cx.beginPath(); cx.arc(c.x, c.y, rad, 0, 7); cx.fill();
     cx.beginPath(); cx.moveTo(c.x, c.y); cx.lineTo(c.x + Math.sin(ang * R) * rad, c.y - Math.cos(ang * R) * rad); cx.strokeStyle = `rgba(${RCOL},.8)`; cx.lineWidth = 1.5; cx.shadowColor = `rgb(${RCOL})`; cx.shadowBlur = 12; cx.stroke(); cx.shadowBlur = 0;
   }
-  drawAllTracks(); drawRoute(ts);
+  drawAllTracks(); drawRoute(ts); if (mode === "live") drawMil(PP);
   for (const t of view) {
     if (t.areaOnly) continue; const col = TM(t.type).c, isSel = selected === t.id;
     const pts = (t.trail || []).map(q => map.latLngToContainerPoint([q.lat, q.lon]));
@@ -362,6 +362,13 @@ function translit(w) {
   return out
 }
 function plRegion(r) { if (!r) return ""; const m = r.match(/^(.+?) область$/); if (m) return OBL_PL[m[1]] ? "obw. " + OBL_PL[m[1]] : translit(r); return CITY_PL[r] || translit(r) }
+// rejon: „Бахмутський район” → „rejon bachmucki”
+function plRaion(n) { if (!n) return ""; const m = String(n).match(/^(.+?)(ський|цький|зький|ський)? район$/); if (!m) return translit(n); let a = translit(m[1]).toLowerCase(); const suf = m[2] === "цький" ? "cki" : m[2] === "зький" ? "zki" : "ski"; a = a.replace(/(ś|s)$/, ""); return "rejon " + a + (m[2] ? suf : "") }
+function plExplain(o) {
+  const m = TM(o.type), cnt = o.count > 1 ? ` (grupa ${o.count})` : "";
+  if (o.areaOnly) return `${m.n}${cnt}: źródła podały tylko obwód (${plRegion(o.region)}).`;
+  return `${m.n}${cnt}${place(o) ? " – " + place(o) : ""}.${o.sourceCount ? " Potwierdzeń: " + o.sourceCount + "." : ""}${o.advisory ? " Obserwacja, bez alarmu." : ""}${o.est ? " Ruch szacowany z ostatnich pozycji." : ""}`
+}
 const plLoc = o => o.locality && o.locality !== o.region ? translit(o.locality) : "";
 const place = o => [plLoc(o), plRegion(o.region)].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(", ") || translit(o.locality || "");
 
@@ -440,7 +447,7 @@ function renderDetail() {
       <div><span>Źródła</span><b>${o.sourceCount ?? "—"}</b></div>
       <div><span>Trasa</span><b>${(o.trail || []).length} pkt</b></div></div></div>
     ${conf != null ? `<div style="display:grid;gap:4px"><span class="note">Pewność danych: ${{ 33: "niska", 66: "średnia", 100: "wysoka" }[conf]}</span><div class="conf"><i style="width:${conf}%"></i></div></div>` : ""}
-    ${o.explanationShort ? `<p class="note">${esc(o.explanationShort)}</p>` : ""}
+    <p class="note">${esc(plExplain(o))}</p>
     ${o.areaOnly ? '<p class="note">Źródła podały tylko obwód, bez miejscowości. Dlatego obiekt nie ma punktu na mapie.</p>' : ""}
     ${route && route.pts.length > 1 ? `<div class="row"><button class="btn pri" id="d-replay" ${replay ? "disabled" : ""}>${replay ? "Odtwarzanie lotu…" : "▶ Odtwórz cały lot"}</button><span class="note">${route.pts.length} punktów, od ${hm(route.pts[0][0])}</span></div>` : '<p class="note">Trasa pojawi się, gdy zbierze się więcej pozycji.</p>'}
     <p class="src">${mode === "hist" ? "Stan z godz. " + hm(histTime) : o.updatedAt ? "Aktualizacja: " + fmtAgo(o.updatedAt) : ""}</p>`;
@@ -476,12 +483,12 @@ function renderAlerts(n) {
     for (const a of n.items) {
       const g = a.kind === "r" ? RAION.get(a.key) : OBL.get(a.key); if (!g) continue;
       L.polygon(g.g, { renderer: svgR, className: a.kind === "r" ? "al-raion" : "al-obl", color: "#ff3b4e", weight: a.kind === "r" ? 1 : 1.4, opacity: .9, fillColor: "#ff3b4e", fillOpacity: a.kind === "r" ? .26 : .22 })
-        .bindTooltip(`<b>${esc(a.name)}</b>${a.oblast && a.oblast !== a.name ? "<br>" + esc(a.oblast) : ""}${a.since ? "<br>Alarm od " + hm(a.since) : a.kind === "o" ? "<br>Alarm w całym obwodzie" : ""}`, { className: "tip", sticky: true }).addTo(alertLayer)
+        .bindTooltip(`<b>${esc(a.kind === "r" ? plRaion(a.name) : plRegion(a.name))}</b>${a.kind === "r" && (a.oblast || (RAION.get(a.key) || {}).o) ? "<br>" + esc(plRegion(a.oblast || RAION.get(a.key).o)) : ""}<br>Alarm lotniczy${a.since ? " od " + hm(a.since) : a.kind === "o" ? " w całym obwodzie" : ""}`, { className: "tip", sticky: true }).addTo(alertLayer)
     }
   }
   setStat("s-obl", new Set(n.items.map(a => a.kind === "o" ? a.name : (a.oblast || (RAION.get(a.key) || {}).o || a.key))).size);
   $("n-al").textContent = n.border.length ? n.border.length + " aktywne" : "brak";
-  $("al-list").innerHTML = n.border.length ? n.border.map(b => `<span class="chip">${esc(b)}</span>`).join("") : '<span class="empty">Brak alarmów w obwodach graniczących z Polską (wołyński, lwowski, zakarpacki).</span>';
+  $("al-list").innerHTML = n.border.length ? n.border.map(b => `<span class="chip">${esc(/ район$/.test(b) ? plRaion(b) : plRegion(b))}</span>`).join("") : '<span class="empty">Brak alarmów w obwodach graniczących z Polską (wołyński, lwowski, zakarpacki).</span>';
   if (mode === "live" && live.alerts) {
     if (prevBorder) { for (const b of n.border) if (!prevBorder.includes(b)) addEvent(1, "Alarm lotniczy przy granicy RP", b, "al:" + b + ":" + Math.floor(Date.now() / 60000)); for (const b of prevBorder) if (!n.border.includes(b)) addEvent(0, "Odwołano alarm przy granicy", b, "alx:" + b + ":" + Math.floor(Date.now() / 60000)) }
     else if (n.border.length) addEvent(1, "Trwa alarm lotniczy przy granicy RP", n.border.join(", "), "alnow:" + n.border.join("|") + ":" + Math.floor(Date.now() / 1800e3));
@@ -497,7 +504,7 @@ function renderTicker() {
   if (!messages.length) return;
   const tx = m => m.pl || m.text;
   const items = messages.slice(0, 25).map(m => `<span><time>${hm(m.date)}</time><b>${esc(m.channel)}</b>${esc(String(tx(m)).replace(/\s+/g, " ").slice(0, 180))}</span>`).join("");
-  $("msgs").innerHTML = messages.slice(0, 12).map(m => `<div><span>${hm(m.date)} · <b>${esc(m.channel)}</b>${m.pl ? " · przetłumaczone" : ""}</span>${esc(String(tx(m)).slice(0, 400))}${m.pl && m.pl !== m.text ? `<details class="orig"><summary>oryginał ▸</summary>${esc(String(m.text).slice(0, 400))}</details>` : ""}</div>`).join("");
+  $("msgs").innerHTML = messages.slice(0, 12).map(m => `<div><span>${hm(m.date)} · <b>${esc(m.channel)}</b>${m.pl ? " · przetłumaczone" : /[а-яіїєґ]/i.test(m.text) ? " · tłumaczenie w kolejce" : ""}</span>${esc(String(tx(m)).slice(0, 400))}${m.pl && m.pl !== m.text ? `<details class="orig"><summary>oryginał ▸</summary>${esc(String(m.text).slice(0, 400))}</details>` : ""}</div>`).join("");
   const rail = $("rail"); rail.innerHTML = items + items; rail.style.setProperty("--dur", Math.max(40, messages.slice(0, 25).reduce((a, m) => a + Math.min(180, String(m.text).length), 0) / 9) + "s")
 }
 
@@ -686,7 +693,7 @@ async function pollNews() { if (!WORKER) { renderNews(); return } try { newsStat
 
 /* ---------- oś czasu ---------- */
 // migawka: [t, [[id,typ,lat,lon,kurs,liczba,flagi,miejsce], ...]]; alarmy: [t, {r:[], o:[], b:[]}]
-const hist = { snaps: [], alerts: [], from: "none", loadedAt: 0, hours: +store.get("hours", 6) };
+const hist = { snaps: [], alerts: [], from: "none", loadedAt: 0, hours: Math.min(12, +store.get("hours2", 3) || 3) };
 const local = { snaps: [], alerts: [] };
 $("t-hours").value = String(hist.hours);
 function compactNow() {
@@ -711,8 +718,7 @@ async function loadHistory(force) {
   if (!WORKER) { useLocal(); drawTrack(); return }
   if (!force && Date.now() - hist.loadedAt < 120000 && hist.from === "worker") return;
   try {
-    const step = hist.hours > 24 ? 4 : hist.hours > 12 ? 3 : hist.hours > 6 ? 2 : 1;
-    const j = await fetchJSON(`${WORKER}/api/history?hours=${hist.hours}&step=${step}`, 30000);
+    const j = await fetchJSON(`${WORKER}/api/history?hours=${hist.hours}`, 30000);
     if (j.snaps && j.snaps.length > 2) { hist.snaps = j.snaps; hist.alerts = j.alerts || []; hist.from = "worker"; hist.loadedAt = Date.now(); buildHistIndex() } else useLocal();
   } catch (e) { useLocal() }
   computeBars(); drawTrack();
@@ -777,7 +783,7 @@ function drawTrack() {
   });
   if (!hist.snaps.length) { tcx.fillStyle = isLight() ? "#6b7a92" : "#5f6f8c"; tcx.font = "500 11px 'IBM Plex Sans',sans-serif"; tcx.fillText(WORKER ? "Wczytywanie historii…" : "Historia zapisuje się od otwarcia strony (co minutę)", 8, base / 2 + 6) }
   tcx.fillStyle = isLight() ? "#6b7a92" : "#5f6f8c"; tcx.font = "500 9px 'JetBrains Mono',monospace";
-  const stepH = hist.hours > 24 ? 6 : hist.hours > 12 ? 3 : hist.hours > 6 ? 2 : 1, first = Math.ceil(a / 3600e3 / stepH) * stepH * 3600e3;
+  const stepH = hist.hours > 6 ? 2 : 1, first = Math.ceil(a / 3600e3 / stepH) * stepH * 3600e3;
   const every = Math.max(1, Math.ceil(40 / (W / ((b - a) / (stepH * 3600e3))))); let n = 0;
   for (let t = first; t < b; t += stepH * 3600e3, n++) { const x = (t - a) / (b - a) * W; tcx.fillRect(x, base, 1, 4); if (n % every === 0) tcx.fillText(hm(t), Math.min(W - 26, x + 3), H - 1) }
   const cur = mode === "hist" ? histTime : b, x = (cur - a) / (b - a) * W;
@@ -794,12 +800,12 @@ function setLabel() {
 function enterHist(t) {
   if (!hist.snaps.length) { toast(WORKER ? "Historia jeszcze się wczytuje." : "Historia zapisuje się od chwili otwarcia strony. Wróć za kilka minut."); goLive(); return }
   const [a] = trange(); histTime = Math.max(Math.max(a, hist.snaps[0][0]), Math.min(Date.now(), t));
-  if (mode !== "hist") { mode = "hist"; document.body.classList.add("history"); $("stage").classList.add("history"); $("histflag").hidden = false; setLive("hist", "Historia (oś czasu)") }
+  if (mode !== "hist") { mode = "hist"; map.removeLayer(milLayer); document.body.classList.add("history"); $("stage").classList.add("history"); $("histflag").hidden = false; setLive("hist", "Historia (oś czasu)") }
   recompute(); refreshAlerts(); setLabel(); drawTrack()
 }
 function goLive() {
   stopPlay(); if (mode === "live") { setLabel(); drawTrack(); return }
-  mode = "live"; $("stage").classList.remove("history"); $("histflag").hidden = true; $("t-range").value = 1000; liveLabel();
+  mode = "live"; if (milOn) milLayer.addTo(map); $("stage").classList.remove("history"); $("histflag").hidden = true; $("t-range").value = 1000; liveLabel();
   recompute(); refreshAlerts(); setLabel(); drawTrack()
 }
 $("t-range").addEventListener("pointerdown", () => loadHistory());
@@ -808,7 +814,7 @@ $("t-range").addEventListener("input", e => {
   stopPlay(); const [a, b] = trange(); enterHist(a + (b - a) * v / 1000)
 });
 $("t-live").onclick = goLive; $("hist-back").onclick = goLive;
-$("t-hours").onchange = e => { hist.hours = +e.target.value; store.set("hours", hist.hours); hist.loadedAt = 0; loadHistory(true) };
+$("t-hours").onchange = e => { hist.hours = +e.target.value; store.set("hours2", hist.hours); hist.loadedAt = 0; loadHistory(true) };
 let playing = false, lastPT = 0, lastFull = 0;
 const playIcon = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M4 2.5v11l9-5.5z"/></svg>', pauseIcon = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M3.5 2.5h3v11h-3zm6 0h3v11h-3z"/></svg>';
 function stopPlay() { playing = false; $("t-play").innerHTML = playIcon; $("t-play").setAttribute("aria-label", "Odtwórz historię") }
@@ -988,28 +994,42 @@ function drawHeat() {
 map.on("moveend zoomend resize", drawHeat);
 $("heat-on").checked = heatOn; $("heat-on").onchange = e => { heatOn = e.target.checked; store.set("heatOn", heatOn); if (heatOn && !stats) loadStats(); drawHeat() };
 
-/* ---------- lotniska ---------- */
-const PLANE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 10h4a2 2 0 0 1 0 4h-4l-4 7h-3l2 -7h-4l-2 2h-3l2 -4l-2 -4h3l2 2h4l-2 -7h3z"/></svg>';
-const AP_LIST = [["EPRZ", "Rzeszów-Jasionka", 50.110, 22.019], ["EPLB", "Lublin", 51.240, 22.714], ["EPWA", "Warszawa-Chopin", 52.166, 20.967], ["EPMO", "Warszawa-Modlin", 52.451, 20.652], ["EPKK", "Kraków-Balice", 50.078, 19.785], ["EPKT", "Katowice-Pyrzowice", 50.474, 19.080], ["EPGD", "Gdańsk", 54.378, 18.466], ["EPPO", "Poznań-Ławica", 52.421, 16.826], ["EPWR", "Wrocław", 51.103, 16.886], ["EPSY", "Olsztyn-Mazury", 53.482, 20.938], ["EPBY", "Bydgoszcz", 53.097, 17.978], ["EPLL", "Łódź", 51.722, 19.398], ["EPRA", "Radom", 51.389, 21.213], ["EPSC", "Szczecin-Goleniów", 53.585, 14.902]];
-const apLayer = L.layerGroup().addTo(map); let apState = { items: [] };
-function apInfo(code) { const a = (apState.items || []).find(x => x.code === code); if (!a) return { st: "quiet", txt: "Brak doniesień o utrudnieniach" }; const age = Date.now() - a.t; if (a.state === "closed" && age < 12 * 3600e3) return { st: "closed", a, txt: "Ruch wstrzymany (wg mediów)" }; if (a.state === "closed") return { st: "stale", a, txt: "Ostatnio: ruch wstrzymany" }; return { st: age < 24 * 3600e3 ? "open" : "quiet", a, txt: "Ruch przywrócony" } }
-const AP_C = { closed: "#e8213a", stale: "#d99200", open: "#16a36a", quiet: "#7b8aa3" };
-function renderAirports() {
-  apLayer.clearLayers(); const rows = [];
-  for (const [code, name, lat, lon] of AP_LIST) {
-    const i = apInfo(code), c = AP_C[i.st];
-    L.marker([lat, lon], { zIndexOffset: i.st === "closed" ? 1700 : 200, keyboard: false, icon: L.divIcon({ className: "", html: `<div class="apm ${i.st}" style="--c:${c}">${PLANE}</div>`, iconSize: [24, 24], iconAnchor: [12, 12] }) })
-      .bindTooltip(`<b>✈ ${esc(name)} (${code})</b><br>${i.txt}${i.a ? `<br><span style="color:var(--muted)">${esc(i.a.title)} · ${esc(i.a.src)}, ${dt(i.a.t)}</span>` : ""}`, { className: "tip", direction: "top", offset: [0, -10] }).addTo(apLayer);
-    if (i.a) rows.push({ code, name, i, c });
-    if (i.st === "closed") addEvent(1, "Lotnisko " + name + ": ruch wstrzymany", i.a.title + " (" + i.a.src + ")", "ap:" + code + ":" + i.a.t, [lat, lon]);
+/* ---------- samoloty wojskowe (ADS-B) ---------- */
+const JET = '<svg viewBox="0 0 24 24"><path fill="currentColor" stroke="rgba(0,0,0,.35)" stroke-width=".6" d="M12 1.6c.7 0 1.1.9 1.2 2.1l.2 4.6 8.1 5.2v1.9l-8.1-2.4-.3 5.1 2.6 1.9v1.4l-3.7-1-3.7 1v-1.4l2.6-1.9-.3-5.1-8.1 2.4v-1.9l8.1-5.2.2-4.6c.1-1.2.5-2.1 1.2-2.1z"/></svg>';
+const MIL_KIND = [[/^(K35R|KC35|KC46|K46|A332|MRTT|A3ST|KC10|DC10|KC30)/, "tankowiec", "#4f9dff"], [/^(E3TF|E3CF|E6|E7|E737|RC35|R135|E8|GLF5|P8|P3|RQ4|Q4|MQ9|CL60|RQ1|B350|PC12|SIRA)/, "rozpoznanie / ISR", "#b77bff"],
+  [/^(C17|C5M|C130|C30J|A400|C295|C27J|CN35|AN|IL76|A124|B762)/, "transport", "#2ec4b6"], [/^(F|EUFI|TYPH|RFAL|GRIP|JAS|HAWK|M346|L39|T38)/, "myśliwiec / szkolny", "#ff8a3d"], [/^(H60|UH|CH47|NH90|EC|AS|H64|AH|MI)/, "śmigłowiec", "#ffd166"]];
+const milKind = a => { for (const [re, n, c] of MIL_KIND) if (re.test(a.t || "")) return { n, c }; return { n: "wojskowy", c: "#9db4d9" } };
+let milState = { ac: [], trails: {} }, milOn = store.get("milOn", true) !== false; const milLayer = L.layerGroup().addTo(map), milMk = new Map();
+$("mil-on").checked = milOn; $("mil-on").onchange = e => { milOn = e.target.checked; store.set("milOn", milOn); renderMil() };
+const milPos = (a, now) => { if (!a.gs || a.trk == null) return [a.lat, a.lon]; const h = Math.min(90, Math.max(0, (now - (a.ts || milState.t)) / 1000)) / 3600; return move([a.lat, a.lon], a.trk, a.gs * 1.852 * h) };
+function renderMil() {
+  const now = Date.now(), list = (milState.ac || []).map(a => ({ ...a, k: milKind(a), dist: inPL([a.lat, a.lon]) ? 0 : distPL([a.lat, a.lon]) })).sort((a, b) => a.dist - b.dist);
+  $("mil-n").textContent = list.length ? list.length + " w regionie" : "brak";
+  $("mil").innerHTML = list.length ? list.slice(0, 20).map(a => `<button class="mi" data-h="${esc(a.h)}" style="--mc:${a.k.c}"><span class="ic">${JET}</span><b>${esc(a.cs || a.r || a.h.toUpperCase())}</b><span class="d">${a.dist < 1 ? "nad RP" : Math.round(a.dist) + " km"}</span><span>${esc(a.d || a.t || "")} · ${a.k.n}${a.alt != null ? " · " + Math.round(a.alt * .3048).toLocaleString("pl-PL") + " m" : ""}${a.gs ? " · " + Math.round(a.gs * 1.852) + " km/h" : ""}</span></button>`).join("") : '<span class="empty">Brak samolotów wojskowych nadających pozycję w regionie.</span>';
+  const seen = new Set();
+  if (milOn) for (const a of list) {
+    seen.add(a.h); const html = `<div class="mil" style="--mc:${a.k.c};--r:${Math.round(a.trk || 0)}deg">${JET}<em>${esc(a.cs || a.t || "MIL")}${a.alt != null ? " · FL" + Math.round(a.alt / 100) : ""}</em></div>`;
+    let mk = milMk.get(a.h);
+    if (!mk) { mk = L.marker(milPos(a, now), { keyboard: false, zIndexOffset: 900, icon: L.divIcon({ className: "", html, iconSize: [30, 30], iconAnchor: [15, 15] }) }).bindTooltip("", { className: "tip", direction: "top", offset: [0, -12] }).addTo(milLayer); milMk.set(a.h, mk) }
+    else mk.setIcon(L.divIcon({ className: "", html, iconSize: [30, 30], iconAnchor: [15, 15] }));
+    mk._a = a;
+    mk.setTooltipContent(`<b style="color:${a.k.c}">✈ ${esc(a.cs || a.h.toUpperCase())}</b> · ${a.k.n}<br>${esc(a.d || a.t)}${a.r ? " · " + esc(a.r) : ""}<br>${a.alt != null ? Math.round(a.alt * .3048).toLocaleString("pl-PL") + " m · " : ""}${a.gs ? Math.round(a.gs * 1.852) + " km/h · " : ""}kurs ${Math.round(a.trk || 0)}°<br>${a.dist < 1 ? "<b>nad Polską</b>" : Math.round(a.dist) + " km od granicy RP"}${a.sq === "7700" ? '<br><b style="color:#ff3b4e">SQUAWK 7700 – sytuacja awaryjna</b>' : ""}`);
   }
-  rows.sort((a, b) => (b.i.st === "closed") - (a.i.st === "closed") || b.i.a.t - a.i.a.t);
-  const closed = rows.filter(r => r.i.st === "closed").length;
-  $("ap-n").textContent = closed ? closed + " z utrudnieniami" : "bez utrudnień";
-  $("ap").innerHTML = (rows.length ? rows.map(r => `<a class="ap" style="--c:${r.c}" href="${esc(r.i.a.link)}" target="_blank" rel="noopener"><span class="pi">${PLANE}</span><b>${esc(r.name)}</b><span class="st">${{ closed: "wstrzymany", stale: "sprawdź", open: "działa", quiet: "działa" }[r.i.st]}</span><span>${esc(r.i.a.title)} · ${dt(r.i.a.t)}</span></a>`).join("") : "") +
-    `<span class="empty">${rows.length ? "Pozostałe lotniska" : "Wszystkie lotniska"}: brak doniesień o utrudnieniach w ostatnich dniach.</span>`;
+  for (const [h, mk] of milMk) if (!seen.has(h)) { milLayer.removeLayer(mk); milMk.delete(h) }
 }
-async function pollAirports() { if (!WORKER) { renderAirports(); return } try { apState = await fetchJSON(WORKER + "/api/airports"); renderAirports() } catch (e) { } }
+$("mil").addEventListener("click", e => { const b = e.target.closest(".mi"); if (!b) return; const mk = milMk.get(b.dataset.h); if (mk) { userMoved = true; map.flyTo(mk.getLatLng(), Math.max(map.getZoom(), 7), { duration: .8 }); setTimeout(() => mk.openTooltip(), 900) } });
+// płynny ruch samolotów i ich ślady (rysowane w klatce radaru)
+function drawMil(PP) {
+  if (!milOn || !milState.ac) return; const now = Date.now();
+  for (const a of milState.ac) {
+    const mk = milMk.get(a.h); if (!mk) continue; const pos = milPos(a, now); mk.setLatLng(pos);
+    const tr = (milState.trails || {})[a.h] || []; if (tr.length < 1) continue;
+    const pts = tr.map(p => map.latLngToContainerPoint([p[1], p[2]])); pts.push(map.latLngToContainerPoint(pos));
+    cx.beginPath(); cx.moveTo(pts[0].x, pts[0].y); for (const q of pts) cx.lineTo(q.x, q.y);
+    cx.strokeStyle = milKind(a).c; cx.globalAlpha = .55; cx.lineWidth = 1.6; cx.setLineDash([5, 4]); cx.stroke(); cx.setLineDash([]); cx.globalAlpha = 1
+  }
+}
+async function pollMil() { if (!WORKER) { $("mil").innerHTML = '<span class="empty">Dostępne, gdy działa serwer aplikacji.</span>'; return } try { milState = await fetchJSON(WORKER + "/api/mil"); renderMil() } catch (e) { } }
 
 /* ---------- zakładki panelu ---------- */
 let curTab = store.get("tab", "teraz");
@@ -1058,7 +1078,7 @@ setTab(curTab, false);
 checkServer(); setInterval(checkServer, 120000);
 pollRcb(); setInterval(() => { if (!document.hidden) pollRcb() }, 60000);
 pollNews(); setInterval(() => { if (!document.hidden) pollNews() }, 120000);
-pollAirports(); setInterval(() => { if (!document.hidden) pollAirports() }, 120000);
+pollMil(); setInterval(() => { if (!document.hidden) pollMil() }, 15000);
 if (heatOn || curTab === "hist") loadStats(); setInterval(() => { if (!document.hidden && (heatOn || curTab === "hist")) loadStats() }, 10 * 60000);
 setInterval(() => { if (!document.hidden) renderFlights() }, 60000);
 connect();

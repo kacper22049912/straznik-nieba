@@ -7,8 +7,9 @@ import { PL } from "./pl.js";
 import { fetchRcb } from "./rcb.js";
 import { fetchNews } from "./news.js";
 import { translateMessages } from "./translate.js";
-import { aggregate, addIncidents, readStats } from "./stats.js";
-import { airportStatus } from "./airports.js";
+import { aggregateRows, addIncidents, readStats } from "./stats.js";
+import { fetchMil } from "./mil.js";
+import { plPlace, plRegion } from "./plnames.js";
 
 const API = "https://neptun.in.ua";
 const UA = "StraznikNieba/1.0 (+https://kacper22049912.github.io/straznik-nieba/)";
@@ -96,46 +97,82 @@ async function neptun(env, path) {
 const kvGet = async (env, k) => { const r = await env.DB.prepare("SELECT v FROM kv WHERE k=?").bind(k).first(); return r ? JSON.parse(r.v) : null };
 const kvPut = (env, k, v) => env.DB.prepare("INSERT OR REPLACE INTO kv(k,v) VALUES(?,?)").bind(k, JSON.stringify(v));
 
-async function tick(env) {
-  await ensureSchema(env);
-  const now = Date.now(), t = Math.floor(now / 60000) * 60000, minute = new Date(t).getUTCMinutes();
-  const [th, al, ms] = await Promise.all([neptun(env, "/api/v1/threats"), neptun(env, "/api/v1/alerts").catch(() => null), neptun(env, "/api/v1/messages").catch(() => null)]);
-  const threats = th.threats || [];
+const HIST_MS = 12 * 3600e3;   // historia pozycji: 12 godzin
+const compact = threats => threats.filter(x => x.status !== "resolved" && x.lat != null).map(x => [x.id, x.type, +(+x.lat).toFixed(3), +(+x.lon).toFixed(3), x.heading ?? null, x.count || 0,
+  (x.areaOnly ? 1 : 0) | (x.advisory ? 2 : 0) | (x.status === "stale" ? 4 : 0), x.locality || x.region || ""]);
+const sleep = ms => new Promise(r => setTimeout(r, Math.max(0, ms)));
 
-  // 1) najpierw zapis historii: migawka [id, typ, lat, lon, kurs, liczba, flagi, miejsce]
-  const rows = threats.filter(x => x.status !== "resolved" && x.lat != null).map(x => [x.id, x.type, +(+x.lat).toFixed(3), +(+x.lon).toFixed(3), x.heading ?? null, x.count || 0,
-    (x.areaOnly ? 1 : 0) | (x.advisory ? 2 : 0) | (x.status === "stale" ? 4 : 0), x.locality || x.region || ""]);
-  const core = [
-    env.DB.prepare("INSERT OR REPLACE INTO snaps(t,d) VALUES(?,?)").bind(t, JSON.stringify(rows)),
-    kvPut(env, "live", { t: now, threats, alerts: al }),
-    kvPut(env, "status", { lastRun: now, ok: true, threats: threats.length }),
-  ];
+// Cron uruchamia worker raz na minutę; w środku pobieramy NEPTUN co 5 s (12 razy).
+// Migawkę zapisujemy, gdy coś się zmieniło, i co najmniej raz na minutę.
+async function run(env) {
+  await ensureSchema(env);
+  const start = Date.now(), st = { last: null, lastT: 0, al: null };
+  const lastRow = await env.DB.prepare("SELECT t, d FROM snaps ORDER BY t DESC LIMIT 1").first();
+  if (lastRow) { st.last = lastRow.d; st.lastT = lastRow.t }
+  for (let i = 0; i < 12; i++) {
+    await sleep(start + i * 5000 - Date.now());
+    if (Date.now() - start > 57000) break;
+    try { await poll(env, st, i) } catch (e) { st.err = String(e && e.message || e) }
+    if (i === 0) { try { await minuteWork(env, st) } catch (e) { st.err = String(e && e.message || e) } }
+    if (i === 6) { try { await milWork(env, false) } catch (e) { } }
+  }
+  await kvPut(env, "status", { lastRun: Date.now(), ok: !st.err, error: st.err || undefined, threats: st.threats ? st.threats.length : 0, interval: 5 }).run();
+}
+
+async function poll(env, st, i) {
+  const now = Date.now();
+  const [th, al] = await Promise.all([neptun(env, "/api/v1/threats"), i % 6 === 0 ? neptun(env, "/api/v1/alerts").catch(() => null) : Promise.resolve(null)]);
+  st.threats = th.threats || []; if (al) st.al = al;
+  const rows = compact(st.threats), d = JSON.stringify(rows), t = Math.round(now / 1000) * 1000;
+  st.rows = rows;
+  if (d !== st.last || t - st.lastT >= 60000) {
+    const stmts = [env.DB.prepare("INSERT OR REPLACE INTO snaps(t,d) VALUES(?,?)").bind(t, d), kvPut(env, "live", { t: now, threats: st.threats, alerts: st.al })];
+    await env.DB.batch(stmts); st.last = d; st.lastT = t;
+  }
+}
+
+async function milWork(env, allowBackup) {
+  const prev = await kvGet(env, "mil"), m = await fetchMil(prev, allowBackup);
+  await kvPut(env, "mil", m).run();
+}
+
+async function minuteWork(env, st) {
+  const now = Date.now(), t = Math.floor(now / 60000) * 60000, minute = new Date(t).getUTCMinutes();
+  const threats = st.threats || [], al = st.al;
+  const core = [];
   let borderNow = [];
   if (al) {
     borderNow = [...(al.raions || []), ...(al.oblasts || [])].filter(a => BORDER_OBL.includes(a.oblast) || BORDER_OBL.includes(a.name));
-    const compact = JSON.stringify({ r: (al.raions || []).map(a => a.key).sort(), o: (al.oblasts || []).map(a => a.key).sort(), b: borderNow.map(a => a.name).sort() });
+    const c = JSON.stringify({ r: (al.raions || []).map(a => a.key).sort(), o: (al.oblasts || []).map(a => a.key).sort(), b: borderNow.map(a => a.name).sort() });
     const prev = await env.DB.prepare("SELECT d FROM alerts_log ORDER BY t DESC LIMIT 1").first();
-    if (!prev || prev.d !== compact) core.push(env.DB.prepare("INSERT OR REPLACE INTO alerts_log(t,d) VALUES(?,?)").bind(t, compact));
+    if (!prev || prev.d !== c) core.push(env.DB.prepare("INSERT OR REPLACE INTO alerts_log(t,d) VALUES(?,?)").bind(t, c));
   }
-  if (minute === 0) core.push(
-    env.DB.prepare("DELETE FROM snaps WHERE t < ?").bind(now - 7 * 864e5),
+  if (minute % 10 === 0) core.push(
+    env.DB.prepare("DELETE FROM snaps WHERE t < ?").bind(now - HIST_MS),
+    env.DB.prepare("DELETE FROM alerts_log WHERE t < ? AND t <> (SELECT MAX(t) FROM alerts_log)").bind(now - HIST_MS),
     env.DB.prepare("DELETE FROM agg WHERE day < ?").bind(new Date(now - 90 * 864e5).toISOString().slice(0, 10)),
-    env.DB.prepare("DELETE FROM alerts_log WHERE t < ? AND t <> (SELECT MAX(t) FROM alerts_log)").bind(now - 48 * 3600e3),
     env.DB.prepare("DELETE FROM sent WHERE t < ?").bind(now - 12 * 3600e3),
     env.DB.prepare("DELETE FROM inbox WHERE t < ?").bind(now - 3600e3),
-    env.DB.prepare("DELETE FROM tr WHERE t < ?").bind(now - 3 * 864e5));
-  await env.DB.batch(core);
+    env.DB.prepare("DELETE FROM tr WHERE t < ?").bind(now - 2 * 864e5),
+    env.DB.prepare("DELETE FROM kv WHERE k='airports' OR k='aggCursor'"));
+  if (core.length) await env.DB.batch(core);
 
-  // 2) statystyki dzienne (przyrostowo) i dodatki; błąd jednego nie blokuje pozostałych
-  try { await aggregate(env, distPL, roughPL, 20) } catch (e) { console.log("AGG ERR", e && e.stack) }
-  const notes = [];   // ogólne komunikaty do wysłania wszystkim: {key, pref, msg}
-  if (ms && Array.isArray(ms.messages)) {
-    // tłumaczymy tylko, gdy ktoś ogląda aplikację (oszczędza darmowy limit Workers AI)
-    const seen = await kvGet(env, "seen");
-    const watching = seen && now - seen.t < 15 * 60000;
-    try { const tr = await translateMessages(env, ms.messages.slice(0, 30), watching ? 12 : 0); await kvPut(env, "msgs", { t: now, messages: tr }).run() }
-    catch (e) { await kvPut(env, "msgs", { t: now, messages: ms.messages.slice(0, 30) }).run() }
-  }
+  // statystyki dzienne z bieżącej migawki
+  try { await aggregateRows(env, t, st.rows || [], distPL, roughPL) } catch (e) { }
+  // samoloty wojskowe (drugi raz w 30. sekundzie)
+  try { await milWork(env, minute % 3 === 0) } catch (e) { }
+
+  const notes = [];
+  // wiadomości z kanałów: tłumaczenie na polski (więcej, gdy ktoś ogląda aplikację)
+  try {
+    const ms = await neptun(env, "/api/v1/messages");
+    if (ms && Array.isArray(ms.messages)) {
+      const seen = await kvGet(env, "seen"), watching = seen && now - seen.t < 20 * 60000;
+      let tr = ms.messages.slice(0, 30);
+      try { tr = await translateMessages(env, tr, watching ? 30 : 6) } catch (e) { }
+      await kvPut(env, "msgs", { t: now, messages: tr }).run();
+    }
+  } catch (e) { }
   if (minute % 2 === 0) {
     try {
       const prev = await kvGet(env, "rcb"), rcb = await fetchRcb(prev); await kvPut(env, "rcb", rcb).run();
@@ -149,18 +186,14 @@ async function tick(env) {
   }
   if (minute % 3 === 1) {
     try {
-      const prev = await kvGet(env, "news"), news = await fetchNews(prev, env);
-      const all = news.all || []; delete news.all;
+      const prev = await kvGet(env, "news"), news = await fetchNews(prev, env); delete news.all;
       await kvPut(env, "news", news).run();
       try { await addIncidents(env, news.items) } catch (e) { }
-      const prevAp = await kvGet(env, "airports"), ap = airportStatus(prevAp, all);
-      await kvPut(env, "airports", ap).run();
-      for (const a of ap.items) if (a.state === "closed" && a.t > now - 3 * 3600e3) notes.push({ key: "ap:" + a.code + ":" + a.t, pref: "news", msg: { title: "✈️ Utrudnienia: lotnisko " + a.name, body: a.title + " (" + a.src + ")", tag: "ap-" + a.code, level: 1, ll: [a.lat, a.lon] } });
       for (const n of news.items) if (n.t > now - 3 * 3600e3 && n.impact) notes.push({ key: "news:" + n.id, pref: "news", msg: { title: "📰 " + n.title, body: `${n.src}${n.place ? " · " + n.place.name : ""}. Doniesienie mediów.`, tag: "news-" + n.id, level: 1, ll: n.place ? [n.place.lat, n.place.lon] : null } });
     } catch (e) { }
   }
 
-  // 3) powiadomienia push
+  // powiadomienia push
   const facts = [];
   for (const x of threats) {
     if (x.areaOnly || x.advisory || x.status === "resolved" || x.status === "stale" || x.lat == null) continue;
@@ -181,20 +214,20 @@ async function tick(env) {
     const once = (key, msg) => { if (!sent.has(s.id + "|" + key)) { sent.add(s.id + "|" + key); msgs.push(msg); stmts.push(env.DB.prepare("INSERT OR REPLACE INTO sent(sub_id,key,t) VALUES(?,?,?)").bind(s.id, key, now)) } };
     for (const f of facts) {
       const name = TYPE_PL[f.x.type] || TYPE_PL.unknown, cnt = f.x.count > 1 ? ` ×${f.x.count}` : "";
-      const where = [f.x.locality, f.x.region].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(", ");
+      const where = plPlace(f.x);
       if (f.inPL && prefs.inPL) once("in:" + f.x.id, { title: `🚨 ${name}${cnt} nad Polską`, body: `Okolice m. ${nearestCity(f.pos)}. Słuchaj komunikatów RCB.`, tag: "in-" + f.x.id, level: 2, ll: f.pos });
       else if (f.dist < prefs.thr && prefs.near) once("near" + prefs.thr + ":" + f.x.id, { title: `⚠️ ${name}${cnt} ${Math.round(f.dist)} km od granicy`, body: `${where}${f.toPL ? ". Kurs w stronę Polski" : ""}${f.speed ? `, ${Math.round(f.speed)} km/h` : ""}.`, tag: "near-" + f.x.id, level: f.toPL ? 2 : 1, ll: f.pos });
       else if (f.toPL && f.dist < prefs.thr * 2 && prefs.toward) once("tow:" + f.x.id, { title: `↗ ${name}${cnt} leci w stronę Polski`, body: `${where}, ${Math.round(f.dist)} km od granicy.`, tag: "tow-" + f.x.id, level: 1, ll: f.pos });
     }
-    if (prefs.border) for (const a of borderNow) once("al:" + a.key + ":" + a.since, { title: "🔴 Alarm lotniczy przy granicy RP", body: `${a.name}${a.oblast && a.oblast !== a.name ? " (" + a.oblast + ")" : ""}`, tag: "al-" + a.key, level: 1 });
+    if (prefs.border) for (const a of borderNow) once("al:" + a.key + ":" + a.since, { title: "🔴 Alarm lotniczy przy granicy RP", body: `${plRegion(a.oblast || a.name)}${a.oblast && a.oblast !== a.name ? " · rejon " + a.name.replace(/ район$/, "") : ""}`, tag: "al-" + a.key, level: 1 });
     for (const n of notes) if (prefs[n.pref] !== false) once(n.key, n.msg);
     if (!msgs.length) continue;
     for (const m of msgs) stmts.push(env.DB.prepare("INSERT INTO inbox(sub_id,t,msg) VALUES(?,?,?)").bind(s.id, now, JSON.stringify(m)));
     try {
-      const st = await sendPush(JSON.parse(s.sub), keys, env);
-      if (st === 404 || st === 410) stmts.push(env.DB.prepare("DELETE FROM subs WHERE id=?").bind(s.id));
-      else if (st < 300) stmts.push(env.DB.prepare("UPDATE subs SET last_ok=? WHERE id=?").bind(now, s.id));
-    } catch (e) { /* nieudany push nie zatrzymuje reszty */ }
+      const code = await sendPush(JSON.parse(s.sub), keys, env);
+      if (code === 404 || code === 410) stmts.push(env.DB.prepare("DELETE FROM subs WHERE id=?").bind(s.id));
+      else if (code < 300) stmts.push(env.DB.prepare("UPDATE subs SET last_ok=? WHERE id=?").bind(now, s.id));
+    } catch (e) { }
   }
   if (stmts.length) await env.DB.batch(stmts);
 }
@@ -221,15 +254,21 @@ async function handle(req, env) {
   }
 
   if (path === "/api/history") {
-    const hours = Math.min(48, Math.max(1, +url.searchParams.get("hours") || 6));
-    const step = Math.min(10, Math.max(1, +url.searchParams.get("step") || 1));
+    const hours = Math.min(12, Math.max(1, +url.searchParams.get("hours") || 3));
+    const res = (hours <= 1 ? 5 : hours <= 3 ? 15 : hours <= 6 ? 30 : 60) * 1000;
+    const cache = caches.default, ck = new Request(`${url.origin}/__h/${hours}/${Math.floor(Date.now() / 20000)}`);
+    const hit = await cache.match(ck); if (hit) return hit;
     const since = Date.now() - hours * 3600e3;
-    const snaps = ((await env.DB.prepare("SELECT t, d FROM snaps WHERE t >= ? ORDER BY t").bind(since).all()).results || [])
-      .filter((r, i) => i % step === 0).map(r => [r.t, JSON.parse(r.d)]);
-    const alerts = ((await env.DB.prepare("SELECT t, d FROM alerts_log WHERE t >= (SELECT COALESCE(MAX(t),0) FROM alerts_log WHERE t <= ?) ORDER BY t").bind(since).all()).results || [])
-      .map(r => [r.t, JSON.parse(r.d)]);
-    return json({ snaps, alerts }, 200, { "Cache-Control": "public, max-age=30" });
+    const rows = (await env.DB.prepare("SELECT t, d FROM snaps WHERE t >= ? ORDER BY t").bind(since).all()).results || [];
+    // ostatnia migawka w każdym przedziale (bez parsowania JSON, żeby nie zużywać czasu procesora)
+    const pick = []; for (let k = 0; k < rows.length; k++) { const b = Math.floor(rows[k].t / res); if (k === rows.length - 1 || Math.floor(rows[k + 1].t / res) !== b) pick.push(rows[k]) }
+    const al = ((await env.DB.prepare("SELECT t, d FROM alerts_log WHERE t >= (SELECT COALESCE(MAX(t),0) FROM alerts_log WHERE t <= ?) ORDER BY t").bind(since).all()).results || []);
+    const body = `{"res":${res},"snaps":[${pick.map(r => `[${r.t},${r.d}]`).join(",")}],"alerts":[${al.map(r => `[${r.t},${r.d}]`).join(",")}]}`;
+    const resp = new Response(body, { headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "public, max-age=20", ...CORS } });
+    await cache.put(ck, resp.clone()); return resp;
   }
+
+  if (path === "/api/mil") return json((await kvGet(env, "mil")) || { t: 0, ac: [], trails: {} }, 200, { "Cache-Control": "public, max-age=10" });
 
   if (path === "/api/status") {
     const last = await env.DB.prepare("SELECT MAX(t) AS t, COUNT(*) AS n FROM snaps").first();
@@ -237,7 +276,6 @@ async function handle(req, env) {
     return json({ ok: true, now: Date.now(), lastSnapshot: last && last.t, snapshots: last && last.n, ...(st ? JSON.parse(st.v) : {}) });
   }
   if (path === "/api/stats") { const days = [7, 14, 30, 90].includes(+url.searchParams.get("days")) ? +url.searchParams.get("days") : 7; return json(await readStats(env, days), 200, { "Cache-Control": "public, max-age=120" }) }
-  if (path === "/api/airports") return json((await kvGet(env, "airports")) || { t: 0, items: [] }, 200, { "Cache-Control": "public, max-age=60" });
   if (path === "/api/rcb") return json((await kvGet(env, "rcb")) || { t: 0, items: [] }, 200, { "Cache-Control": "public, max-age=30" });
   if (path === "/api/news") return json((await kvGet(env, "news")) || { t: 0, items: [] }, 200, { "Cache-Control": "public, max-age=60" });
   if (path === "/api/messages") {
@@ -287,7 +325,7 @@ export default {
     try { return await handle(req, env) } catch (e) { return json({ error: "Błąd serwera", detail: String(e && e.message || e) }, 500) }
   },
   async scheduled(_ev, env, ctx) {
-    ctx.waitUntil(tick(env).catch(async e => {
+    ctx.waitUntil(run(env).catch(async e => {
       // zapamiętaj błąd, żeby aplikacja mogła pokazać, dlaczego historia się nie zapisuje
       try { await ensureSchema(env); await env.DB.prepare("INSERT OR REPLACE INTO kv(k,v) VALUES('status',?)").bind(JSON.stringify({ lastRun: Date.now(), ok: false, error: String(e && e.message || e).slice(0, 300) })).run() } catch (_) { }
     }))
