@@ -190,7 +190,7 @@ select{background:var(--abyss);border:1px solid var(--edge-hi);border-radius:8px
 /* oś czasu */
 .timeline{left:max(14px,env(safe-area-inset-left,0px));right:max(14px,env(safe-area-inset-right,0px));bottom:calc(max(12px,env(safe-area-inset-bottom,0px)) + 46px);height:56px;display:flex;align-items:center;gap:10px;padding:0 10px;border-radius:12px}
 .tbtn{flex:none;height:36px;min-width:36px;padding:0 10px;border-radius:9px;border:1px solid var(--edge-hi);background:rgba(255,255,255,.04);cursor:pointer;display:grid;place-items:center;font:600 11px var(--f-mono);letter-spacing:.06em}
-.tbtn.live{white-space:nowrap;color:var(--ok);border-color:rgba(59,227,155,.5);gap:6px;display:flex;align-items:center}
+.tbtn.live{white-space:nowrap;min-width:max-content;width:max-content;color:var(--ok);border-color:rgba(59,227,155,.5);gap:6px;display:flex;align-items:center}
 .tbtn.live i{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 8px var(--ok)}
 .history .tbtn.live{color:var(--fg);border-color:var(--edge-hi)}.history .tbtn.live i{background:var(--dim);box-shadow:none}
 .tbtn svg{width:16px;height:16px}
@@ -227,34 +227,78 @@ select{background:var(--abyss);border:1px solid var(--edge-hi);border-radius:8px
 
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 
-@media (max-width:900px){
-  body{overflow:auto}
-  .stage{height:auto;overflow:visible}
-  .mapbox{position:relative;height:74vh;min-height:440px}
-  :root{--bottom:104px}
-  .top{flex-wrap:wrap;gap:8px}
-  .brand{flex:1 1 0;min-width:0;padding:8px 12px}
-  .brand h1{font-size:13px;letter-spacing:.1em}
-  .brand{gap:9px;padding:8px 10px}
-  .mark{width:28px;height:28px}
-  .level .lbl{display:none}
-  .brand small span{overflow:hidden;text-overflow:ellipsis}
-  .levelbox{flex:none;padding:8px 10px}
-  .level{font-size:12px;padding:7px 10px}
-  .stats{order:3;flex-basis:100%;padding:4px}
-  .stat{min-width:74px;padding:4px 8px}.stat b{font-size:20px}
-  .histflag{top:auto;bottom:calc(var(--bottom) + 10px);font-size:11px}
+.grab{display:none;flex-direction:column;align-items:center;gap:8px;padding:8px 16px 10px;cursor:grab;touch-action:none;user-select:none;border-bottom:1px solid var(--edge)}
+.grab > i{width:44px;height:5px;border-radius:3px;background:rgba(160,190,240,.4)}
+.peek{display:flex;width:100%;justify-content:space-between;align-items:center;gap:10px;font:600 13px/1.2 var(--f-disp);letter-spacing:.06em;text-transform:uppercase}
+.peek span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.peek span:last-child{flex:none;white-space:nowrap;color:var(--muted);font-size:11px}
+.peek b{color:var(--radar)}
+#msg-sec{display:none}
+.msgs{display:grid;gap:8px}
+.msgs div{display:grid;gap:2px;font-size:12.5px;line-height:1.4;padding:8px 10px;border-radius:9px;background:rgba(255,255,255,.03);border:1px solid var(--edge)}
+.msgs div span{font:500 10.5px var(--f-mono);color:var(--dim)}
+.msgs div span b{color:var(--radar);font-weight:600}
+
+/* węższe ekrany komputerów i tablety poziomo */
+@media (max-width:1180px) and (min-width:901px){
+  .side{width:330px}
+  .leaflet-bottom.leaflet-right{right:350px}
+  .stat{min-width:66px;padding:5px 8px}.stat b{font-size:21px}.stat span{font-size:9px}
+  .brand h1{font-size:17px}
   .legend{display:none}
-  .leaflet-bottom.leaflet-right{right:0}
-  .side{position:relative;inset:auto;width:auto;margin:12px max(12px,env(safe-area-inset-left,0px)) 24px max(12px,env(safe-area-inset-right,0px))}
-  .side .scroll{overflow:visible}
-  .timeline{left:8px;right:8px;gap:6px;padding:0 6px;height:52px;bottom:52px}
-  .timeline select{display:none}
-  .tlabel{min-width:62px;font-size:11px}
+}
+
+/* telefony i tablety pionowo: mapa na cały ekran, panel jako wysuwany arkusz */
+@media (max-width:900px){
+  :root{--peek:74px;--bottom:calc(var(--peek) + 66px)}
+  html,body{overflow:hidden}
+  .stage{height:100vh;height:100dvh}
+  .top{top:max(8px,env(safe-area-inset-top,0px));left:max(8px,env(safe-area-inset-left,0px));right:max(8px,env(safe-area-inset-right,0px));flex-wrap:wrap;gap:6px}
+  .glass{border-radius:12px}
+  .brand{flex:1 1 0;min-width:0;gap:9px;padding:7px 10px}
+  .brand h1{font-size:13px;letter-spacing:.1em}
+  .brand small{font-size:9.5px}
+  .brand small span{overflow:hidden;text-overflow:ellipsis}
+  .mark{width:28px;height:28px}
+  .levelbox{flex:none;padding:7px 9px;gap:4px}
+  .level{font-size:11.5px;padding:7px 9px;letter-spacing:.1em}
+  .level .lbl{display:none}
+  .clock{font-size:10.5px}
+  .stats{order:3;flex-basis:100%;padding:3px;gap:0}
+  .stat{flex:1 1 0;min-width:0;padding:4px 5px;gap:3px}
+  .stat b{font-size:min(17px,4.3vw);white-space:nowrap}
+  .stat span{font-size:8px;letter-spacing:.03em;white-space:normal;line-height:1.15}
+  .histflag{top:auto;bottom:calc(var(--bottom) + 8px);font-size:11px;padding:6px 6px 6px 12px}
+  .legend,.ticker,.leaflet-control-zoom{display:none}
+  .leaflet-bottom.leaflet-right{right:4px;bottom:calc(var(--bottom) + 2px)}
+  .timeline{left:max(8px,env(safe-area-inset-left,0px));right:max(8px,env(safe-area-inset-right,0px));bottom:calc(var(--peek) + 8px + env(safe-area-inset-bottom,0px));height:50px;gap:6px;padding:0 6px}
+  #t-speed{display:none}
+  #t-hours{padding:4px 2px;font-size:11px}
+  .tbtn{height:34px;min-width:34px;padding:0 8px}
   .tbtn.live span{display:none}
-  .ticker{left:8px;right:8px;bottom:8px}
-  .ticker .att{display:none}
-  .ticker .lab{padding:0 10px;font-size:11px}
+  .tlabel{min-width:50px;font-size:11px}
+  .tlabel small{font-size:9px}
+  .side{position:fixed;left:0;right:0;top:auto;bottom:0;width:auto;height:min(88vh,calc(100vh - 64px));height:min(88dvh,calc(100dvh - 64px));z-index:1200;
+    border-radius:18px 18px 0 0;border-bottom:0;transform:translateY(calc(100% - var(--peek) - env(safe-area-inset-bottom,0px)));transition:transform .38s cubic-bezier(.2,.8,.2,1),opacity .7s}
+  .side[data-s="half"]{transform:translateY(46%)}
+  .side[data-s="full"]{transform:translateY(0)}
+  .side.drag{transition:none}
+  .grab{display:flex}
+  .side .scroll{padding:0 14px calc(28px + env(safe-area-inset-bottom,0px));overscroll-behavior:contain}
+  #msg-sec{display:grid}
+  .kv{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .tk em{font-size:9px;left:40px}
+}
+/* telefon poziomo */
+@media (max-width:900px) and (max-height:500px){
+  :root{--peek:56px}
+  .stats{display:none}
+  .peek{font-size:12px}
+  .side{height:calc(100vh - 16px);height:calc(100dvh - 16px)}
+}
+@media (max-width:360px){
+  .brand small{display:none}
+  .stat span{font-size:7.5px}
 }
 </style>
 </head>
@@ -311,8 +355,9 @@ select{background:var(--abyss);border:1px solid var(--edge-hi);border-radius:8px
     <div class="hud toast glass" id="toast" hidden role="status"></div>
   </div>
 
-  <aside class="hud side glass" aria-label="Panel zagrożeń">
-    <div class="scroll">
+  <aside class="hud side glass" id="side" data-s="peek" aria-label="Panel zagrożeń">
+    <div class="grab" id="grab" role="button" tabindex="0" aria-label="Rozwiń lub zwiń panel"><i></i><div class="peek"><span id="peek-l">Czekam na dane…</span><span id="peek-r"></span></div></div>
+    <div class="scroll" id="side-scroll">
       <div class="sec" id="detail-sec" hidden><div class="detail" id="detail"></div></div>
       <div class="sec">
         <h2>Najbliżej Polski <span class="n" id="n-list">—</span></h2>
@@ -321,6 +366,10 @@ select{background:var(--abyss);border:1px solid var(--edge-hi);border-radius:8px
       <div class="sec">
         <h2>Alarmy przy granicy RP <span class="n" id="n-al">—</span></h2>
         <div class="chips" id="al-list"><span class="empty">Brak danych.</span></div>
+      </div>
+      <div class="sec" id="msg-sec">
+        <h2>Kanały monitoringu <span class="n">Telegram</span></h2>
+        <div class="msgs" id="msgs"><span class="empty">Oczekiwanie na wiadomości…</span></div>
       </div>
       <div class="sec" id="push-sec">
         <h2>Powiadomienia w tle</h2>

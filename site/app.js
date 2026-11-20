@@ -56,7 +56,7 @@ L.control.zoom({ position: "bottomright" }).addTo(map);
 L.control.scale({ imperial: false, position: "bottomright" }).addTo(map);
 const svgR = L.svg({ padding: .3 });
 const HOME = () => mobile() ? [[46.5, 14.2], [54.9, 33]] : [[45.6, 13.8], [55.2, 38.5]];
-const homePad = () => ({ paddingTopLeft: [0, mobile() ? 80 : 90], paddingBottomRight: [mobile() ? 0 : 390, mobile() ? 100 : 110] });
+const homePad = () => ({ paddingTopLeft: [0, mobile() ? 105 : 90], paddingBottomRight: [mobile() ? 0 : innerWidth <= 1180 ? 345 : 390, mobile() ? 150 : 110] });
 map.fitBounds(HOME(), homePad());
 let userMoved = false;
 map.getContainer().addEventListener("pointerdown", () => userMoved = true);
@@ -106,6 +106,7 @@ function frame(ts) {
   requestAnimationFrame(frame);
   if (zooming || ts - lastFrame < 33 || document.hidden) return; lastFrame = ts;
   L.DomUtil.setPosition(cv, map.containerPointToLayerPoint([0, 0]));
+  fastPositions(ts);
   const s = map.getSize(); cx.setTransform(dpr, 0, 0, dpr, 0, 0); cx.clearRect(0, 0, s.x, s.y);
   const hist = mode === "hist", RCOL = hist ? "255,190,80" : "56,225,255";
   const c = map.latLngToContainerPoint(RC), edge = map.latLngToContainerPoint(move(RC, 90, RANGE)); const rad = Math.abs(edge.x - c.x);
@@ -123,6 +124,7 @@ function frame(ts) {
     cx.fillStyle = g; cx.beginPath(); cx.arc(c.x, c.y, rad, 0, 7); cx.fill();
     cx.beginPath(); cx.moveTo(c.x, c.y); cx.lineTo(c.x + Math.sin(ang * R) * rad, c.y - Math.cos(ang * R) * rad); cx.strokeStyle = `rgba(${RCOL},.8)`; cx.lineWidth = 1.5; cx.shadowColor = `rgb(${RCOL})`; cx.shadowBlur = 12; cx.stroke(); cx.shadowBlur = 0;
   }
+  drawRoute(ts);
   for (const t of view) {
     if (t.areaOnly) continue; const col = TM(t.type).c, isSel = selected === t.id;
     const pts = (t.trail || []).map(q => map.latLngToContainerPoint([q.lat, q.lon])); const here = map.latLngToContainerPoint(t.pos); pts.push(here);
@@ -133,7 +135,8 @@ function frame(ts) {
         cx.strokeStyle = col; cx.globalAlpha = .15 + .75 * f; cx.lineWidth = (isSel ? 2 : 1) + 2.4 * f; cx.shadowColor = col; cx.shadowBlur = 12 * f; cx.stroke()
       }
       for (let i = 0; i < pts.length - 1; i++) { cx.beginPath(); cx.arc(pts[i].x, pts[i].y, 1.8, 0, 7); cx.fillStyle = col; cx.globalAlpha = .5; cx.fill() }
-      cx.globalAlpha = 1; cx.shadowBlur = 0
+      cx.globalAlpha = 1; cx.shadowBlur = 0;
+      if (!reduce) { cx.setLineDash([3, 13]); cx.lineDashOffset = -ts / 40; cx.beginPath(); cx.moveTo(pts[0].x, pts[0].y); for (let i = 1; i < pts.length; i++) cx.lineTo(pts[i].x, pts[i].y); cx.strokeStyle = "#fff"; cx.globalAlpha = .55; cx.lineWidth = 1.3; cx.stroke(); cx.setLineDash([]); cx.lineDashOffset = 0; cx.globalAlpha = 1 }
     }
     if (t.hdg != null && !t.advisory) {
       const len = t.speed ? t.speed / (isSel ? 2 : 6) : 25, ahead = map.latLngToContainerPoint(move(t.pos, t.hdg, len));
@@ -150,6 +153,58 @@ function frame(ts) {
   }
 }
 requestAnimationFrame(frame);
+/* pełna trasa wybranego obiektu i animacja lotu */
+let route = null, replay = null;
+function routeFor(id) {
+  const pts = [];
+  for (const [t, rows] of hist.snaps) { const r = rows.find(x => x[0] === id); if (r && !(r[6] & 1)) pts.push([t, r[2], r[3]]) }
+  const lt = live.threats.get(id);
+  if (lt && !lt.areaOnly) { for (const q of lt.trail || []) { const t = Date.parse(q.t); if (isFinite(t)) pts.push([t, q.lat, q.lon]) } pts.push([Date.parse(lt.updatedAt) || Date.now(), lt.lat, lt.lon]) }
+  pts.sort((a, b) => a[0] - b[0]);
+  const out = []; for (const p of pts) { const l = out[out.length - 1]; if (!l || km([l[1], l[2]], [p[1], p[2]]) > .3) out.push(p) }
+  return out
+}
+function drawRoute(ts) {
+  if (!route || route.pts.length < 2) return;
+  const col = TM(route.type).c, P = route.pts.map(p => map.latLngToContainerPoint([p[1], p[2]]));
+  cx.setLineDash([2, 5]); cx.beginPath(); cx.moveTo(P[0].x, P[0].y); for (const q of P) cx.lineTo(q.x, q.y); cx.strokeStyle = col; cx.globalAlpha = .5; cx.lineWidth = 1.5; cx.stroke(); cx.setLineDash([]); cx.globalAlpha = 1;
+  cx.beginPath(); cx.arc(P[0].x, P[0].y, 4, 0, 7); cx.strokeStyle = col; cx.lineWidth = 2; cx.stroke();
+  cx.fillStyle = "#cfe0f5"; cx.font = "600 10px 'JetBrains Mono',monospace"; cx.fillText("start " + hm(route.pts[0][0]), P[0].x + 7, P[0].y - 6);
+  if (!replay) return;
+  const dur = replay.dur, p = Math.min(1, (ts - replay.start) / dur);
+  if (ts - replay.start > dur + 1800) { replay = null; renderDetail(); return }
+  // pozycja wzdłuż trasy proporcjonalnie do czasu lotu
+  const t0 = route.pts[0][0], t1 = route.pts[route.pts.length - 1][0], tt = t0 + (t1 - t0) * p;
+  let k = 1; while (k < route.pts.length - 1 && route.pts[k][0] < tt) k++;
+  const a = route.pts[k - 1], b = route.pts[k], f = b[0] > a[0] ? Math.min(1, Math.max(0, (tt - a[0]) / (b[0] - a[0]))) : 1;
+  const head = [a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f], H = map.latLngToContainerPoint(head);
+  cx.beginPath(); cx.moveTo(P[0].x, P[0].y); for (let i = 1; i < k; i++) cx.lineTo(P[i].x, P[i].y); cx.lineTo(H.x, H.y);
+  cx.strokeStyle = col; cx.lineWidth = 3.2; cx.shadowColor = col; cx.shadowBlur = 16; cx.lineCap = "round"; cx.lineJoin = "round"; cx.stroke(); cx.shadowBlur = 0;
+  const ang = bearingOf([a[1], a[2]], [b[1], b[2]]) * R;
+  cx.save(); cx.translate(H.x, H.y); cx.rotate(ang); cx.beginPath(); cx.moveTo(0, -11); cx.lineTo(7, 8); cx.lineTo(0, 4); cx.lineTo(-7, 8); cx.closePath();
+  cx.fillStyle = col; cx.shadowColor = col; cx.shadowBlur = 20; cx.fill(); cx.restore(); cx.shadowBlur = 0;
+  cx.beginPath(); cx.arc(H.x, H.y, 16 + 6 * Math.sin(ts / 120), 0, 7); cx.strokeStyle = col; cx.globalAlpha = .5; cx.lineWidth = 1.5; cx.stroke(); cx.globalAlpha = 1;
+  const lbl = hm(tt); cx.font = "700 12px 'JetBrains Mono',monospace"; const w = cx.measureText(lbl).width + 12;
+  cx.fillStyle = "rgba(5,11,22,.85)"; cx.fillRect(H.x + 16, H.y - 26, w, 20); cx.strokeStyle = col; cx.lineWidth = 1; cx.strokeRect(H.x + 16, H.y - 26, w, 20);
+  cx.fillStyle = "#fff"; cx.fillText(lbl, H.x + 22, H.y - 12)
+}
+function startReplay() {
+  if (!route || route.pts.length < 2) return;
+  replay = { start: performance.now(), dur: Math.min(14000, Math.max(5000, route.pts.length * 350)) };
+  const b = L.latLngBounds(route.pts.map(p => [p[1], p[2]])); userMoved = true; map.flyToBounds(b, { padding: [60, 60], maxZoom: 8.5, duration: .8 });
+  renderDetail()
+}
+let lastFast = 0;
+function fastPositions(ts) {
+  if (ts - lastFast < 60) return; lastFast = ts;
+  if (mode === "hist") {
+    const m = new Map(histThreatsAt(histTime).map(o => [o.id, o]));
+    for (const o of view) { if (o.areaOnly) continue; const n = m.get(o.id); if (!n) continue; o.pos = [n.lat, n.lon]; if (n.heading != null) o.hdg = n.heading; const mk = markers.get(o.id); if (mk) mk.setLatLng(o.pos) }
+  } else {
+    const now = Date.now();
+    for (const o of view) { if (o.areaOnly || !o.speed) continue; const t = live.threats.get(o.id); if (!t) continue; o.pos = deadReckon(t, now).pos; const mk = markers.get(o.id); if (mk) mk.setLatLng(o.pos) }
+  }
+}
 
 /* ---------- budowa widoku ---------- */
 function deadReckon(t, now) {
@@ -202,11 +257,12 @@ function renderMarkers() {
   if (s && !s.areaOnly && s.uncertaintyKm) L.circle(s.pos, { radius: s.uncertaintyKm * 1000, renderer: svgR, className: "unc", color: TM(s.type).c, weight: 1.2, dashArray: "4 5", fillColor: TM(s.type).c, fillOpacity: .07, interactive: false }).addTo(selLayer);
 }
 function select(id, silent) {
-  selected = id;
+  selected = id; replay = null;
+  route = null; if (id) { const o = view.find(x => x.id === id); if (o && !o.areaOnly) { loadHistory(); route = { id, type: o.type, pts: routeFor(id) } } }
   if (!silent) {
     const o = view.find(x => x.id === id);
-    if (o) { userMoved = true; if (o.areaOnly) { const ob = OBL_BY_NAME.get(o.region); if (ob) map.flyToBounds(L.polygon(ob.g).getBounds(), { duration: .8 }) } else map.flyTo(o.pos, Math.max(map.getZoom(), 7.25), { duration: .8 }) }
-    if (mobile() && id) setTimeout(() => $("detail-sec").scrollIntoView({ behavior: "smooth", block: "start" }), 900);
+    if (o) { userMoved = true; if (o.areaOnly) { const ob = OBL_BY_NAME.get(o.region); if (ob) map.flyToBounds(L.polygon(ob.g).getBounds(), { duration: .8 }) } else { const z = Math.max(map.getZoom(), 7.25); const c = mobile() ? map.unproject(map.project(o.pos, z).add([0, map.getSize().y * .24]), z) : o.pos; map.flyTo(c, z, { duration: .8 }) } }
+    if (mobile() && id) { setSheet("half"); $("side-scroll").scrollTo({ top: 0, behavior: "smooth" }) }
     renderMarkers(); renderList();
   }
   renderDetail();
@@ -234,6 +290,7 @@ function compass(h, c) {
 }
 function renderDetail() {
   const o = view.find(x => x.id === selected); $("detail-sec").hidden = !o; if (!o) return;
+  if (route && route.id === o.id && !replay && hist.snaps.length) route.pts = routeFor(o.id);
   const m = TM(o.type), conf = { low: 33, medium: 66, high: 100 }[o.confidenceLevel || o.displayConfidence] ?? null;
   const eta = o.toPL && o.speed ? Math.round(o.toPL / o.speed * 60) : null;
   const el = $("detail"); el.style.setProperty("--c", m.c);
@@ -249,14 +306,19 @@ function renderDetail() {
     ${conf != null ? `<div style="display:grid;gap:4px"><span class="note">Pewność danych: ${{ 33: "niska", 66: "średnia", 100: "wysoka" }[conf]}</span><div class="conf"><i style="width:${conf}%"></i></div></div>` : ""}
     ${o.explanationShort ? `<p class="note">${esc(o.explanationShort)}</p>` : ""}
     ${o.areaOnly ? '<p class="note">Źródła podały tylko obwód, bez miejscowości. Dlatego obiekt nie ma punktu na mapie.</p>' : ""}
+    ${route && route.pts.length > 1 ? `<div class="row"><button class="btn pri" id="d-replay" ${replay ? "disabled" : ""}>${replay ? "Odtwarzanie lotu…" : "▶ Odtwórz cały lot"}</button><span class="note">${route.pts.length} punktów, od ${hm(route.pts[0][0])}</span></div>` : '<p class="note">Trasa pojawi się, gdy zbierze się więcej pozycji.</p>'}
     <p class="src">${mode === "hist" ? "Stan z godz. " + hm(histTime) : o.updatedAt ? "Aktualizacja: " + fmtAgo(o.updatedAt) : ""}</p>`;
   $("d-close").onclick = () => select(null);
+  const rb = $("d-replay"); if (rb) rb.onclick = startReplay;
 }
 function setStat(id, v) { const el = $(id); el.textContent = v; el.parentElement.classList.toggle("zero", v === 0 || v === "—") }
 function renderStats() {
   const c = t => view.filter(o => o.type === t && !o.advisory).reduce((a, o) => a + (o.count > 1 ? o.count : 1), 0);
   setStat("s-uav", c("uav") + c("recon")); setStat("s-mis", c("missile")); setStat("s-bal", c("ballistic")); setStat("s-kab", c("kab"));
-  const near = view.find(o => o.dist != null && !o.advisory); setStat("s-near", near ? (near.inPL ? "NAD RP" : Math.round(near.dist) + " km") : "—")
+  const near = view.find(o => o.dist != null && !o.advisory); setStat("s-near", near ? (near.inPL ? "NAD RP" : Math.round(near.dist) + " km") : "—");
+  const n = view.length;
+  $("peek-l").innerHTML = near ? `Najbliżej RP: <b>${near.inPL ? "nad Polską" : Math.round(near.dist) + " km"}</b> · ${esc(TM(near.type).s)}` : (live.haveData || mode === "hist") ? "Brak obiektów z pozycją" : "Czekam na dane…";
+  $("peek-r").textContent = n ? n + " w powietrzu" : ""
 }
 
 /* ---------- alarmy ---------- */
@@ -293,6 +355,7 @@ const refreshAlerts = () => renderAlerts(mode === "hist" ? normCompact(histAlert
 function renderTicker() {
   if (!messages.length) return;
   const items = messages.slice(0, 25).map(m => `<span><time>${hm(m.date)}</time><b>${esc(m.channel)}</b>${esc(String(m.text).replace(/\s+/g, " ").slice(0, 180))}</span>`).join("");
+  $("msgs").innerHTML = messages.slice(0, 12).map(m => `<div><span>${hm(m.date)} · <b>${esc(m.channel)}</b></span>${esc(String(m.text).slice(0, 400))}</div>`).join("");
   const rail = $("rail"); rail.innerHTML = items + items; rail.style.setProperty("--dur", Math.max(40, messages.slice(0, 25).reduce((a, m) => a + Math.min(180, String(m.text).length), 0) / 9) + "s")
 }
 
@@ -395,16 +458,34 @@ async function loadHistory(force) {
   computeBars(); drawTrack();
 }
 function idxAt(arr, t) { let lo = 0, hi = arr.length - 1, r = -1; while (lo <= hi) { const m = (lo + hi) >> 1; if (arr[m][0] <= t) { r = m; lo = m + 1 } else hi = m - 1 } return r }
+const bearingOf = (a, b) => (Math.atan2((b[1] - a[1]) * Math.cos((a[0] + b[0]) / 2 * R), b[0] - a[0]) / R + 360) % 360;
+let hcache = { key: "", base: null };
+function histBase(i) {
+  const key = i + ":" + hist.snaps.length + ":" + hist.snaps[i][0];
+  if (hcache.key === key) return hcache.base;
+  const [st, rows] = hist.snaps[i], nx = hist.snaps[i + 1];
+  const back = []; for (let j = i - 1; j >= 0 && st - hist.snaps[j][0] <= 45 * 60000; j--) back.push(hist.snaps[j]);
+  const list = rows.map(r => {
+    const [id, type, lat, lon, hdg, count, f, loc] = r;
+    const trail = []; let prev = null;
+    for (let k = back.length - 1; k >= 0; k--) { const q = back[k][1].find(x => x[0] === id); if (q && !(q[6] & 1)) { const l = trail[trail.length - 1]; if (!l || l.lat !== q[2] || l.lon !== q[3]) { trail.push({ lat: q[2], lon: q[3] }); prev = [back[k][0], q[2], q[3]] } } }
+    let heading = hdg, velocity = null;
+    if (prev && !(f & 1)) { const d = km([prev[1], prev[2]], [lat, lon]), h = (st - prev[0]) / 3600e3; if (d > 1 && h > 0) { const b = bearingOf([prev[1], prev[2]], [lat, lon]); if (heading == null) heading = b; const v = d / h; if (v < 1200) velocity = { speedKmh: v, bearingDeg: heading } } }
+    return { id, type, lat, lon, heading, velocity, count, areaOnly: !!(f & 1), advisory: !!(f & 2), status: f & 4 ? "stale" : "active", locality: loc, region: (f & 1) ? loc : "", trail }
+  });
+  hcache = { key, base: { list, st, nt: nx ? nx[0] : 0, next: nx ? new Map(nx[1].map(r => [r[0], r])) : null } };
+  return hcache.base
+}
 function histThreatsAt(t) {
   const i = idxAt(hist.snaps, t); if (i < 0) return [];
-  const [st, rows] = hist.snaps[i]; const out = [];
-  const back = []; for (let j = i - 1; j >= 0 && st - hist.snaps[j][0] <= 45 * 60000; j--) back.push(hist.snaps[j]);
-  for (const r of rows) {
-    const [id, type, lat, lon, hdg, count, f, loc] = r;
-    const trail = []; for (let k = back.length - 1; k >= 0; k--) { const q = back[k][1].find(x => x[0] === id); if (q && !(q[6] & 1)) { const l = trail[trail.length - 1]; if (!l || l.lat !== q[2] || l.lon !== q[3]) trail.push({ lat: q[2], lon: q[3] }) } }
-    out.push({ id, type, lat, lon, heading: hdg, count, areaOnly: !!(f & 1), advisory: !!(f & 2), status: f & 4 ? "stale" : "active", locality: loc, region: (f & 1) ? loc : "", trail })
-  }
-  return out
+  const b = histBase(i);
+  const f = b.nt && b.nt - b.st <= 6 * 60000 ? Math.min(1, Math.max(0, (t - b.st) / (b.nt - b.st))) : 0;
+  if (!f) return b.list;
+  return b.list.map(o => {
+    const q = b.next.get(o.id); if (!q || o.areaOnly || (q[6] & 1)) return o;
+    const moved = km([o.lat, o.lon], [q[2], q[3]]) > .5;
+    return { ...o, lat: o.lat + (q[2] - o.lat) * f, lon: o.lon + (q[3] - o.lon) * f, heading: moved ? bearingOf([o.lat, o.lon], [q[2], q[3]]) : o.heading }
+  })
 }
 function histAlertsAt(t) { const i = idxAt(hist.alerts, t); return i < 0 ? null : hist.alerts[i][1] }
 const trange = () => { const end = Date.now(); return [end - hist.hours * 3600e3, end] };
@@ -468,20 +549,25 @@ $("t-range").addEventListener("input", e => {
 });
 $("t-live").onclick = goLive; $("hist-back").onclick = goLive;
 $("t-hours").onchange = e => { hist.hours = +e.target.value; store.set("hours", hist.hours); hist.loadedAt = 0; loadHistory(true) };
-let playTimer = null;
+let playing = false, lastPT = 0, lastFull = 0;
 const playIcon = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M4 2.5v11l9-5.5z"/></svg>', pauseIcon = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M3.5 2.5h3v11h-3zm6 0h3v11h-3z"/></svg>';
-function stopPlay() { clearInterval(playTimer); playTimer = null; $("t-play").innerHTML = playIcon; $("t-play").setAttribute("aria-label", "Odtwórz historię") }
+function stopPlay() { playing = false; $("t-play").innerHTML = playIcon; $("t-play").setAttribute("aria-label", "Odtwórz historię") }
+function playStep(ts) {
+  if (!playing) return;
+  const dt = lastPT ? Math.min(100, ts - lastPT) : 0; lastPT = ts;
+  const [a2, b2] = trange(); histTime += dt * +$("t-speed").value;
+  if (histTime >= b2 - 30000) { goLive(); return }
+  $("t-range").value = Math.round((histTime - a2) / (b2 - a2) * 1000);
+  if (ts - lastFull > 350) { lastFull = ts; recompute(); refreshAlerts(); setLabel(); drawTrack() }
+  requestAnimationFrame(playStep)
+}
 $("t-play").onclick = async () => {
-  if (playTimer) { stopPlay(); return }
+  if (playing) { stopPlay(); return }
   await loadHistory();
   if (!hist.snaps.length) { enterHist(0); return }
   const [a, b] = trange(); if (mode === "live" || histTime >= b - 60000) enterHist(Math.max(a, hist.snaps[0][0]));
   $("t-play").innerHTML = pauseIcon; $("t-play").setAttribute("aria-label", "Zatrzymaj odtwarzanie");
-  playTimer = setInterval(() => {
-    const sp = +$("t-speed").value; const [a2, b2] = trange(); const nt = histTime + sp * 150;
-    if (nt >= b2 - 30000) { goLive(); return }
-    histTime = nt; $("t-range").value = Math.round((histTime - a2) / (b2 - a2) * 1000); recompute(); refreshAlerts(); setLabel(); drawTrack()
-  }, 150)
+  playing = true; lastPT = 0; requestAnimationFrame(playStep)
 };
 new ResizeObserver(() => drawTrack()).observe($("t-canvas"));
 setInterval(() => { computeBars(); drawTrack(); if (mode === "hist") setLabel() }, 30000);
@@ -509,6 +595,24 @@ async function initPush() {
   if (!pushOK) { $("push-on").disabled = true; pushStatus("Ta przeglądarka nie obsługuje powiadomień w tle. Na Androidzie użyj Chrome, na iPhonie dodaj stronę do ekranu początkowego."); return }
   await showPushState()
 }
+function pushError(e) {
+  const msg = String(e && (e.message || e) || "");
+  if (e && e.name === "NotAllowedError") return "Przeglądarka zablokowała powiadomienia dla tej strony. Zezwól na nie w ustawieniach strony (ikona kłódki obok adresu).";
+  if (/push service|AbortError|registration failed/i.test(msg) || (e && e.name === "AbortError")) {
+    if (navigator.brave) return "Brave domyślnie wyłącza usługę powiadomień. Wejdź w brave://settings/privacy, włącz „Use Google services for push messaging”, uruchom przeglądarkę ponownie i spróbuj jeszcze raz. Możesz też użyć Chrome.";
+    return "Przeglądarka nie połączyła się ze swoją usługą powiadomień (błąd po stronie przeglądarki, nie serwera). Najczęstsze przyczyny: przeglądarka Brave lub Opera, telefon bez usług Google (np. Huawei), tryb incognito albo oszczędzanie danych/VPN blokujące usługi Google. Spróbuj w zwykłym oknie Chrome lub Firefoksa.";
+  }
+  return "Nie udało się włączyć powiadomień: " + msg
+}
+async function subscribeOnce(key) {
+  try { return await swReg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(key) }) }
+  catch (e) {
+    // stara subskrypcja z innym kluczem albo chwilowy błąd usługi: wyczyść i spróbuj raz jeszcze
+    const old = await swReg.pushManager.getSubscription().catch(() => null); if (old) await old.unsubscribe().catch(() => { });
+    await new Promise(r => setTimeout(r, 1500));
+    return swReg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(key) })
+  }
+}
 $("push-on").onclick = async () => {
   const b = $("push-on"); b.disabled = true; pushStatus("Włączanie…");
   try {
@@ -516,10 +620,10 @@ $("push-on").onclick = async () => {
     if (perm !== "granted") { pushStatus("Nie zezwolono na powiadomienia. Zmień to w ustawieniach przeglądarki dla tej strony.", "bad"); return }
     swReg = swReg || await navigator.serviceWorker.ready;
     const { key } = await fetchJSON(WORKER + "/api/vapid");
-    const sub = await swReg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(key) });
+    const sub = await subscribeOnce(key);
     await post("/api/subscribe", { subscription: sub.toJSON(), prefs: prefs() });
     await showPushState(); toast("Powiadomienia w tle włączone.");
-  } catch (e) { pushStatus("Nie udało się włączyć powiadomień: " + (e && e.message || e), "bad") } finally { b.disabled = false }
+  } catch (e) { pushStatus(pushError(e), "bad") } finally { b.disabled = false }
 };
 $("push-test").onclick = async () => { try { const sub = await currentSub(); await post("/api/test", { endpoint: sub.endpoint }); pushStatus("Wysłano. Powiadomienie powinno pojawić się za kilka sekund.", "ok") } catch (e) { pushStatus("Nie udało się wysłać: " + e.message, "bad") } };
 $("push-off").onclick = async () => { try { const sub = await currentSub(); if (sub) { await post("/api/unsubscribe", { endpoint: sub.endpoint }).catch(() => { }); await sub.unsubscribe() } pushStatus("Wyłączone na tym urządzeniu.") } catch (e) { pushStatus("Nie udało się wyłączyć: " + e.message, "bad") } showPushState() };
@@ -530,6 +634,25 @@ function prefsChanged() {
 }
 for (const k of PREFS) $("p-" + k).onchange = prefsChanged;
 $("i-thr").onchange = e => { thr = +e.target.value; store.set("thr", thr); recompute(); prefsChanged() };
+
+/* ---------- wysuwany panel na telefonie ---------- */
+const side = $("side"), grab = $("grab"), ORDER = ["peek", "half", "full"];
+function setSheet(st) { side.dataset.s = st; side.style.transform = "" }
+let drag = null;
+grab.addEventListener("pointerdown", e => { if (!mobile()) return; const r = side.getBoundingClientRect(); drag = { y0: e.clientY, off0: r.top - (innerHeight - r.height), moved: false }; side.classList.add("drag"); grab.setPointerCapture(e.pointerId) });
+grab.addEventListener("pointermove", e => {
+  if (!drag) return; const dy = e.clientY - drag.y0; if (Math.abs(dy) > 6) drag.moved = true;
+  const max = side.offsetHeight - parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--peek") || 74);
+  side.style.transform = `translateY(${Math.min(max, Math.max(0, drag.off0 + dy))}px)`
+});
+const endDrag = e => {
+  if (!drag) return; side.classList.remove("drag");
+  if (!drag.moved) { setSheet(ORDER[(ORDER.indexOf(side.dataset.s) + 1) % 3]); drag = null; return }
+  const r = side.getBoundingClientRect(), frac = (r.top - (innerHeight - r.height)) / r.height;
+  setSheet(frac < .22 ? "full" : frac < .68 ? "half" : "peek"); drag = null
+};
+grab.addEventListener("pointerup", endDrag); grab.addEventListener("pointercancel", endDrag);
+grab.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSheet(ORDER[(ORDER.indexOf(side.dataset.s) + 1) % 3]) } });
 
 /* ---------- start ---------- */
 if (mobile()) $("legend").open = false;
