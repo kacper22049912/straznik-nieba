@@ -132,8 +132,10 @@ async function poll(env, st, i) {
 }
 
 async function milWork(env, allowBackup) {
-  const prev = await kvGet(env, "mil"), m = await fetchMil(prev, allowBackup);
-  await kvPut(env, "mil", m).run();
+  try {
+    const prev = await kvGet(env, "mil"), m = await fetchMil(prev, allowBackup);
+    await kvPut(env, "mil", m).run();
+  } catch (e) { await kvPut(env, "mil_err", { t: Date.now(), error: String(e && e.message || e) }).run().catch(() => { }) }
 }
 
 async function minuteWork(env, st) {
@@ -268,7 +270,7 @@ async function handle(req, env) {
     await cache.put(ck, resp.clone()); return resp;
   }
 
-  if (path === "/api/mil") return json((await kvGet(env, "mil")) || { t: 0, ac: [], trails: {} }, 200, { "Cache-Control": "public, max-age=10" });
+  if (path === "/api/mil") return json({ ...((await kvGet(env, "mil")) || { t: 0, ac: [], trails: {} }), err: await kvGet(env, "mil_err") }, 200, { "Cache-Control": "public, max-age=10" });
 
   if (path === "/api/status") {
     const last = await env.DB.prepare("SELECT MAX(t) AS t, COUNT(*) AS n FROM snaps").first();
