@@ -1,0 +1,21 @@
+# Strażnik Nieba: jeden Cloudflare Worker serwuje stronę (katalog site/) i API (/api/*).
+name = "straznik-nieba"
+main = "worker/src/index.js"
+compatibility_date = "2025-10-01"
+workers_dev = true
+
+# pliki strony: index.html, app.js, sw.js, ikony, granice
+[assets]
+directory = "./site"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+
+# co minutę: pobranie danych z NEPTUN, zapis historii, wysyłka powiadomień
+[triggers]
+crons = ["* * * * *"]
+
+# baza na historię i subskrypcje powiadomień
+[[d1_databases]]
+binding = "DB"
+database_name = "straznik-nieba"
+database_id = "__D1_ID__"

@@ -1,7 +1,0 @@
-{
-  "name": "straznik-nieba-worker",
-  "private": true,
-  "type": "module",
-  "scripts": { "dev": "wrangler dev --test-scheduled", "deploy": "wrangler deploy" },
-  "devDependencies": { "wrangler": "4.157.0" }
-}

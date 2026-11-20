@@ -2,7 +2,7 @@
 
 Radarowa mapa Polski i Ukrainy z zagrożeniami powietrznymi na żywo: drony, pociski, bomby KAB, MiG-31K oraz alarmy w obwodach i rejonach Ukrainy. Pokazuje tory lotu, kurs, prędkość i odległość każdego obiektu do granicy Polski.
 
-Strona: https://kacper22049912.github.io/straznik-nieba/
+Strona: adres workera `https://straznik-nieba.<twoja-subdomena>.workers.dev`
 
 ## Co potrafi
 
@@ -14,30 +14,26 @@ Strona: https://kacper22049912.github.io/straznik-nieba/
 
 ## Jak to działa
 
+Wszystko działa w jednym Cloudflare Workerze:
+
+- `site/`: pliki strony (`index.html`, `app.js`, `sw.js`, ikony, granice) serwowane jako statyczne zasoby workera,
+- `worker/src/index.js`: API pod `/api/*` oraz zadanie uruchamiane co minutę. Pobiera dane z NEPTUN, zapisuje migawkę do osi czasu w bazie D1 i wysyła powiadomienia Web Push. Klucze VAPID tworzy sam przy pierwszym uruchomieniu,
+- `wrangler.toml`: konfiguracja workera (zasoby, harmonogram, baza D1).
+
 ```
-NEPTUN ──► Cloudflare Worker (co minutę) ──► baza D1: historia, subskrypcje
-                 │                                  
-                 └──► Web Push ──► telefon (sw.js pobiera treść z /api/inbox)
+NEPTUN ──► worker (co minutę) ──► D1: historia, subskrypcje ──► Web Push ──► telefon
 NEPTUN ──► przeglądarka (WebSocket / REST) ──► mapa
 ```
 
-- `site/`: strona na GitHub Pages (`index.html`, `app.js`, `sw.js`, ikony, granice).
-- `worker/`: Cloudflare Worker (`src/index.js`). Co minutę pobiera dane, zapisuje migawkę do osi czasu i wysyła powiadomienia. Klucze VAPID tworzy sam przy pierwszym uruchomieniu i trzyma w bazie.
-- `.github/workflows/deploy.yml`: każdy push na `main` wdraża workera, a potem stronę z jego adresem.
+Cloudflare buduje i wdraża workera z tego repozytorium przy każdym pushu na `main` (Workers Builds).
 
-## Konfiguracja powiadomień w tle (jednorazowo)
+## Pierwsza konfiguracja (jednorazowo)
 
-1. Załóż darmowe konto na https://dash.cloudflare.com i raz otwórz **Workers & Pages**, żeby powstała subdomena `*.workers.dev`.
-2. Utwórz token API: **My Profile → API Tokens → Create Token → szablon „Edit Cloudflare Workers”**. Dodaj w nim uprawnienie **Account → D1 → Edit**.
-3. Skopiuj **Account ID** (prawa kolumna na stronie głównej konta lub w Workers & Pages).
-4. W repozytorium na GitHubie: **Settings → Secrets and variables → Actions → New repository secret**. Dodaj:
-   - `CLOUDFLARE_API_TOKEN`: token z punktu 2,
-   - `CLOUDFLARE_ACCOUNT_ID`: identyfikator z punktu 3.
-5. **Actions → Wdrożenie (worker + strona) → Run workflow**.
+1. Na https://dash.cloudflare.com wejdź w **Storage & Databases → D1 → Create** i utwórz bazę o nazwie `straznik-nieba`. Jej **Database ID** wpisz w `wrangler.toml` w miejsce `__D1_ID__`.
+2. Wejdź w **Workers & Pages → Create → Import a repository**, połącz GitHuba i wybierz to repozytorium. Nazwa projektu: `straznik-nieba`. Ustawienia budowania zostaw domyślne (polecenie wdrożenia: `npx wrangler deploy`, katalog główny: `/`).
+3. Kliknij **Deploy**. Adres aplikacji pojawi się na stronie workera.
 
-Bez tych sekretów strona działa normalnie. Nie ma wtedy tylko powiadomień w tle i historii z serwera; oś czasu zapisuje się lokalnie od otwarcia strony.
-
-Darmowy plan Cloudflare wystarcza: worker uruchamia się 1440 razy na dobę, a historia z 48 godzin zajmuje kilka MB w D1.
+Lokalnie: `npm install`, potem `npm run dev`.
 
 ## Ważne
 

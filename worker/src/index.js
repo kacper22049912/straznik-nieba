@@ -191,6 +191,7 @@ async function handle(req, env) {
     return json({ ok: true, lastSnapshot: last && last.t });
   }
 
+  if (!path.startsWith("/api/")) return env.ASSETS ? env.ASSETS.fetch(req) : new Response("Nie znaleziono", { status: 404 });
   if (req.method !== "POST") return json({ error: "Nie znaleziono" }, 404);
   const b = await body(req);
 

@@ -1,2 +1,2 @@
-/* Adres workera powiadomień. Przy wdrożeniu przez GitHub Actions ten plik jest nadpisywany. */
-self.SN_CONFIG = { worker: "" };
+/* Strona i API działają pod tym samym adresem (Cloudflare Worker). */
+self.SN_CONFIG = { worker: self.location.origin };
