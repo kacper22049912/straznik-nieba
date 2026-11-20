@@ -4,9 +4,12 @@ const UA = "StraznikNieba/1.0 (+https://github.com/kacper22049912/straznik-nieba
 const BOX = { s: 42, n: 60.5, w: 9, e: 42 };
 async function get(url) { const r = await fetch(url, { headers: { "User-Agent": UA, Accept: "application/json" } }); if (!r.ok) throw new Error("HTTP " + r.status); return r.json() }
 export async function fetchMil(prev, allowBackup) {
-  let j, src = "adsb.fi";
-  try { j = await get("https://opendata.adsb.fi/api/v2/mil") }
-  catch (e) { if (!allowBackup) throw e; j = await get("https://api.adsb.lol/v2/mil"); src = "adsb.lol" }
+  // adsb.fi odrzuca zapytania z serwerów Cloudflare (403), więc najpierw adsb.lol
+  let j, src = "adsb.lol", errs = [];
+  for (const [name, url] of [["adsb.lol", "https://api.adsb.lol/v2/mil"], ["adsb.fi", "https://opendata.adsb.fi/api/v2/mil"]]) {
+    try { j = await get(url); src = name; break } catch (e) { errs.push(name + ": " + e.message) }
+  }
+  if (!j) throw new Error(errs.join("; "));
   const now = Date.now(), ac = [];
   for (const a of j.ac || []) {
     if (a.lat == null || a.lon == null || a.alt_baro === "ground") continue;

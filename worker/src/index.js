@@ -114,7 +114,6 @@ async function run(env) {
     if (Date.now() - start > 57000) break;
     try { await poll(env, st, i) } catch (e) { st.err = String(e && e.message || e) }
     if (i === 0) { try { await minuteWork(env, st) } catch (e) { st.err = String(e && e.message || e) } }
-    if (i === 6) { try { await milWork(env, false) } catch (e) { } }
   }
   await kvPut(env, "status", { lastRun: Date.now(), ok: !st.err, error: st.err || undefined, threats: st.threats ? st.threats.length : 0, interval: 5 }).run();
 }
@@ -161,8 +160,8 @@ async function minuteWork(env, st) {
 
   // statystyki dzienne z bieżącej migawki
   try { await aggregateRows(env, t, st.rows || [], distPL, roughPL) } catch (e) { }
-  // samoloty wojskowe (drugi raz w 30. sekundzie)
-  try { await milWork(env, minute % 3 === 0) } catch (e) { }
+  // samoloty wojskowe co minutę
+  await milWork(env, true);
 
   const notes = [];
   // wiadomości z kanałów: tłumaczenie na polski (więcej, gdy ktoś ogląda aplikację)
