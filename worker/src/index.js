@@ -122,7 +122,10 @@ async function tick(env) {
   // 2) dodatki; błąd jednego nie blokuje pozostałych
   const notes = [];   // ogólne komunikaty do wysłania wszystkim: {key, pref, msg}
   if (ms && Array.isArray(ms.messages)) {
-    try { const tr = await translateMessages(env, ms.messages.slice(0, 30), 8); await kvPut(env, "msgs", { t: now, messages: tr }).run() }
+    // tłumaczymy tylko, gdy ktoś ogląda aplikację (oszczędza darmowy limit Workers AI)
+    const seen = await kvGet(env, "seen");
+    const watching = seen && now - seen.t < 15 * 60000;
+    try { const tr = await translateMessages(env, ms.messages.slice(0, 30), watching ? 12 : 0); await kvPut(env, "msgs", { t: now, messages: tr }).run() }
     catch (e) { await kvPut(env, "msgs", { t: now, messages: ms.messages.slice(0, 30) }).run() }
   }
   if (minute % 2 === 0) {
@@ -222,6 +225,8 @@ async function handle(req, env) {
   if (path === "/api/rcb") return json((await kvGet(env, "rcb")) || { t: 0, items: [] }, 200, { "Cache-Control": "public, max-age=30" });
   if (path === "/api/news") return json((await kvGet(env, "news")) || { t: 0, items: [] }, 200, { "Cache-Control": "public, max-age=60" });
   if (path === "/api/messages") {
+    const seen = await kvGet(env, "seen");
+    if (!seen || Date.now() - seen.t > 5 * 60000) await kvPut(env, "seen", { t: Date.now() }).run();
     const row = await env.DB.prepare("SELECT v FROM kv WHERE k='msgs'").first();
     return json(row ? JSON.parse(row.v) : { t: 0, messages: [] }, 200, { "Cache-Control": "public, max-age=15" });
   }

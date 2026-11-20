@@ -63,8 +63,12 @@ const map = L.map("map", { zoomSnap: .25, minZoom: 4, maxZoom: 11, zoomControl: 
 L.control.zoom({ position: "bottomright" }).addTo(map);
 L.control.scale({ imperial: false, position: "bottomright" }).addTo(map);
 const svgR = L.svg({ padding: .3 });
-const HOME = () => mobile() ? [[46.5, 14.2], [54.9, 33]] : [[45.6, 13.8], [55.2, 38.5]];
-const homePad = () => ({ paddingTopLeft: [0, mobile() ? 105 : 90], paddingBottomRight: [mobile() ? 0 : innerWidth <= 1180 ? 345 : 390, mobile() ? 150 : 110] });
+const HOME = () => mobile() ? [[48.4, 14.1], [54.9, 30.8]] : [[45.6, 13.8], [55.2, 38.5]];
+const cssPx = n => parseFloat(getComputedStyle(document.documentElement).getPropertyValue(n)) || 0;
+const homePad = () => ({ paddingTopLeft: [0, (cssPx("--hud-b") || 100) + 4], paddingBottomRight: [mobile() ? 0 : innerWidth <= 1180 ? 345 : 390, mobile() ? cssPx("--peek") + cssPx("--tl") + 22 : 110] });
+// wysokość górnego paska: baner i dopasowanie mapy zaczynają się pod nim
+function measureHud() { const t = document.querySelector(".hud.top"); if (t) document.documentElement.style.setProperty("--hud-b", Math.round(t.getBoundingClientRect().bottom) + "px") }
+measureHud(); new ResizeObserver(measureHud).observe(document.querySelector(".hud.top"));
 map.fitBounds(HOME(), homePad());
 let userMoved = false;
 map.getContainer().addEventListener("pointerdown", () => userMoved = true);
@@ -465,6 +469,7 @@ function renderTicker() {
 }
 
 /* ---------- komunikaty ---------- */
+const BOOT = Date.now();
 const events = store.get("events", []).filter(e => e.t > Date.now() - 24 * 3600e3);
 const evKeys = new Set(events.map(e => e.k));
 let unread = 0;
@@ -472,7 +477,7 @@ function addEvent(level, title, body, key, ll) {
   if (key && evKeys.has(key)) return; if (key) evKeys.add(key);
   const e = { t: Date.now(), l: level, title, body, k: key, ll }; events.unshift(e); if (events.length > 80) events.length = 80;
   store.set("events", events); unread++; renderEvents(true);
-  if (level >= 1 && mode === "live") showBanner(e)
+  if (level >= 1 && mode === "live" && (Date.now() - BOOT > 20000 || level >= 2)) showBanner(e)
 }
 function renderEvents(fresh) {
   $("ev-n").textContent = events.length ? events.length + " z 24 h" : "—";
@@ -612,7 +617,7 @@ function renderNews() {
       .bindTooltip(`<b>${esc(k)}: doniesienia mediów</b>${same.slice(0, 3).map(x => `<br>• ${esc(x.title)} <span style="color:var(--muted)">(${esc(x.src)}, ${hm(x.t)})</span>`).join("")}<br><span style="color:var(--muted)">Kliknij, aby otworzyć artykuł</span>`, { className: "tip", direction: "top", offset: [0, -12] })
       .on("click", () => window.open(n.link, "_blank", "noopener")).addTo(newsLayer);
   }
-  for (const n of items) if (n.t > Date.now() - 6 * 3600e3) addEvent(1, "Doniesienie: " + n.title, n.src + (n.place ? " · " + n.place.name : "") + ". Informacja mediów, niepotwierdzona.", "news:" + n.id, n.place ? [n.place.lat, n.place.lon] : null);
+  for (const n of items) if (n.t > Date.now() - 6 * 3600e3) addEvent(n.t > Date.now() - 30 * 60000 ? 1 : 0, "Doniesienie: " + n.title, n.src + (n.place ? " · " + n.place.name : "") + ". Informacja mediów, niepotwierdzona.", "news:" + n.id, n.place ? [n.place.lat, n.place.lon] : null);
 }
 async function pollNews() { if (!WORKER) { renderNews(); return } try { newsState = await fetchJSON(WORKER + "/api/news"); renderNews() } catch (e) { } }
 
