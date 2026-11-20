@@ -1,7 +1,7 @@
 // Samoloty wojskowe z ADS-B (adsb.fi, zapasowo adsb.lol): tylko te, które same nadają pozycję.
 // Myśliwce i samoloty bojowe zwykle mają wyłączone transpondery, więc ich tu nie zobaczymy.
 const UA = "StraznikNieba/1.0 (+https://github.com/kacper22049912/straznik-nieba)";
-const BOX = { s: 42, n: 60.5, w: 9, e: 42 };
+const BOX = { s: 48.9, n: 55.1, w: 14, e: 24.3 };   // tylko niebo nad Polską (dokładny obrys sprawdza aplikacja)
 async function get(url) { const r = await fetch(url, { headers: { "User-Agent": UA, Accept: "application/json" } }); if (!r.ok) throw new Error("HTTP " + r.status); return r.json() }
 export async function fetchMil(prev, allowBackup) {
   // adsb.fi odrzuca zapytania z serwerów Cloudflare (403), więc najpierw adsb.lol

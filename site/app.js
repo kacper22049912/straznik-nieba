@@ -153,6 +153,9 @@ function frame(ts) {
     const here = map.latLngToContainerPoint(t.pos); pts.push(here);
     if (pts.length > 1) {
       cx.lineCap = "round"; cx.lineJoin = "round";
+      // obramowanie, żeby trasa była widoczna także na czerwonych obszarach alarmów
+      cx.beginPath(); cx.moveTo(pts[0].x, pts[0].y); for (let i = 1; i < pts.length; i++) cx.lineTo(pts[i].x, pts[i].y);
+      cx.strokeStyle = isLight() ? "rgba(255,255,255,.9)" : "rgba(3,8,18,.85)"; cx.lineWidth = isSel ? 7 : 5.5; cx.stroke();
       for (let i = 1; i < pts.length; i++) {
         const f = i / (pts.length - 1); cx.beginPath(); cx.moveTo(pts[i - 1].x, pts[i - 1].y); cx.lineTo(pts[i].x, pts[i].y);
         cx.strokeStyle = col; cx.globalAlpha = .15 + .75 * f; cx.lineWidth = (isSel ? 2 : 1) + 2.4 * f; cx.shadowColor = col; cx.shadowBlur = 12 * f; cx.stroke()
@@ -192,34 +195,95 @@ function buildHistIndex() {
     if (r[6] & 1) continue; const a = histIndex.get(r[0]) || []; const l = a[a.length - 1]; if (!l || l[1] !== r[2] || l[2] !== r[3]) a.push([t, r[2], r[3]]); histIndex.set(r[0], a);
     const m = histMeta.get(r[0]) || { type: r[1], count: 0, first: t, loc: r[7] }; m.last = t; m.count = Math.max(m.count, r[5] || 0); if (r[7]) m.loc = r[7]; histMeta.set(r[0], m)
   }
+  try { buildChains() } catch (e) { }
   renderFlights()
+}
+/* ---------- trasy: łączenie kolejnych zgłoszeń NEPTUN w jeden lot ----------
+   NEPTUN przy każdym nowym zgłoszeniu z kanałów tworzy nowy znacznik. Zgłoszenie tego samego typu,
+   które pojawia się blisko końca istniejącej trasy (w zasięgu prędkości obiektu) i w podobnym kierunku,
+   uznajemy za ciąg dalszy tej trasy. */
+const FAM = t => t === "recon" ? "uav" : t;
+const VKM = { uav: 4, missile: 16, ballistic: 45, kab: 9, mig31k: 40, fpv: 3, unknown: 6 };   // km/min, górna granica
+let chains = [], chainOf = new Map(), chainsAt = 0;
+const KILL = /(мінус|збит|знищен|знешкоджен|уражен|приземлен|minus|zestrzel)/i;
+function buildChains() {
+  const tr = new Map(), now = Date.now();
+  const add = (id, type, t, seen, lat, lon, f, loc) => {
+    if (f & 1 || lat == null) return; let x = tr.get(id);
+    if (!x) { x = { id, type, t0: t, seen, pts: [], loc }; tr.set(id, x) }
+    if (t < x.t0) x.t0 = t; if (seen > x.seen) x.seen = seen; if (loc) x.loc = loc;
+    const l = x.pts[x.pts.length - 1]; if (!l || l[1] !== lat || l[2] !== lon) x.pts.push([t, lat, lon])
+  };
+  for (const [t, rows] of hist.snaps) for (const r of rows) add(r[0], r[1], t, t, r[2], r[3], r[6], r[7]);
+  for (const t of live.threats.values()) {
+    if (t.areaOnly || t.lat == null || t.status === "resolved") continue;
+    add(t.id, t.type, Math.min(now, Date.parse(t.updatedAt) || now), now, t.lat, t.lon, 0, t.locality || t.region);
+    const x = tr.get(t.id); if (!x) continue; x.live = true;
+    for (const q of t.trail || []) { const tt = Date.parse(q.t); if (isFinite(tt)) x.pts.push([tt, q.lat, q.lon]) }
+  }
+  for (const x of tr.values()) { x.pts.sort((a, b) => a[0] - b[0]); x.t1 = x.pts[x.pts.length - 1][0] }
+  const list = [...tr.values()].sort((a, b) => a.t0 - b.t0), out = [];
+  for (const B of list) {
+    let best = null, bs = 1e9; const b0 = B.pts[0];
+    for (const C of out) {
+      if (FAM(C.type) !== FAM(B.type)) continue;
+      const a1 = C.pts[C.pts.length - 1], gap = (b0[0] - a1[0]) / 60000;
+      if (gap < 0.25 || gap > 15) continue;
+      const d = km([a1[1], a1[2]], [b0[1], b0[2]]), allow = (VKM[FAM(B.type)] || 6) * (gap + 2) + 20;
+      if (d > allow || d < 1) continue;
+      let score = d / allow + gap / 30;
+      if (C.pts.length >= 2) { const p = C.pts[C.pts.length - 2]; if (km([p[1], p[2]], [a1[1], a1[2]]) > 5) { const h1 = bearingOf([p[1], p[2]], [a1[1], a1[2]]), h2 = bearingOf([a1[1], a1[2]], [b0[1], b0[2]]); let df = Math.abs(h1 - h2) % 360; if (df > 180) df = 360 - df; if (df > 110) continue; score += df / 220 } }
+      if (score < bs) { bs = score; best = C }
+    }
+    if (best) { best.ids.push(B.id); best.pts.push(...B.pts); best.tail = B; best.type = B.type; best.loc = B.loc || best.loc; best.seen = Math.max(best.seen, B.seen) }
+    else out.push({ ids: [B.id], pts: [...B.pts], tail: B, t0: B.t0, type: B.type, loc: B.loc, seen: B.seen })
+  }
+  chainOf = new Map(); for (const C of out) { C.pts.sort((a, b) => a[0] - b[0]); for (const id of C.ids) chainOf.set(id, C) }
+  for (const C of out) {
+    C.t1 = C.pts[C.pts.length - 1][0];
+    C.lost = mode === "live" && !C.tail.live && C.seen > now - 40 * 60000 && C.seen < now - 90000;
+    C.killed = null;
+    const loc = String(C.loc || ""); if (loc.length < 4) continue;
+    const stem = loc.toLowerCase().slice(0, Math.max(4, loc.length - 2));
+    for (const m of messages) { const mt = Date.parse(m.date); if (!(mt > C.t1 - 10 * 60000 && mt < C.t1 + 30 * 60000)) continue; const tx = String(m.text || "").toLowerCase(); if (tx.includes(stem) && KILL.test(tx)) { C.killed = { t: mt, text: m.pl || m.text, ch: m.channel }; break } }
+  }
+  chains = out; chainsAt = now;
+}
+const chainFor = id => chainOf.get(id);
+function objState(o) {
+  const C = chainFor(o.id);
+  if (C && C.killed) return { k: "killed", n: "zestrzelony wg kanałów", c: "#16a36a" };
+  if (C && C.tail && C.tail.id !== o.id) return { k: "old", n: "starsze zgłoszenie", c: "#7b8aa3" };
+  if (o.status === "stale") return { k: "stale", n: "nieaktualny", c: "#7b8aa3" };
+  if (o.lifecycle === "confirmed") return { k: "conf", n: "aktywny · potwierdzony", c: "#ff3b4e" };
+  return { k: "unc", n: "aktywny · niepewny", c: "#ffb020" }
 }
 function flightList() {
   const out = [];
-  const cand = [...histIndex].filter(([, pts]) => pts.length >= 2).sort((x, y) => y[1][y[1].length - 1][0] - x[1][x[1].length - 1][0]).slice(0, 40);
-  for (const [id] of cand) {
-    const all = routeFor(id); if (all.length < 3) continue;
+  const cand = chains.filter(C => C.pts.length >= 3).sort((x, y) => y.pts[y.pts.length - 1][0] - x.pts[x.pts.length - 1][0]).slice(0, 40);
+  for (const C of cand) {
+    const id = C.tail.id, all = C.pts;
     let len = 0, minD = 1e9; for (let i = 1; i < all.length; i++) len += km([all[i - 1][1], all[i - 1][2]], [all[i][1], all[i][2]]);
     const step = Math.max(1, Math.floor(all.length / 12));
     for (let i = 0; i < all.length; i += step) { const p = [all[i][1], all[i][2]], c = km(p, [51.9, 19.1]); minD = Math.min(minD, c > 900 ? c - 330 : distPL(p)) }
     const m = histMeta.get(id) || {};
-    out.push({ id, pts: all, type: TYPES[m.type] ? m.type : "unknown", count: m.count, loc: m.loc, first: all[0][0], last: all[all.length - 1][0], len, minD })
+    out.push({ id, pts: all, type: TYPES[C.type] ? C.type : "unknown", count: m.count, loc: C.loc, first: all[0][0], last: all[all.length - 1][0], len, minD, reports: C.ids.length, killed: C.killed, live: C.tail.live })
   }
   return out.sort((a, b) => b.last - a.last)
 }
 function renderFlights() {
   const fl = flightList(); $("fl-n").textContent = fl.length ? fl.length + " tras" : "—";
   if (!fl.length) { $("flights").innerHTML = `<span class="empty">${hist.snaps.length ? "Za mało pozycji, by narysować trasy. Trasy pojawią się, gdy obiekty będą w powietrzu dłużej niż kilka minut." : "Historia jest pusta. Serwer zapisuje pozycje co minutę od chwili wdrożenia; bez serwera historia zbiera się od otwarcia strony."}</span>`; return }
-  $("flights").innerHTML = fl.slice(0, 30).map(f => { const m = TM(f.type); return `<div class="fl" style="--c:${m.c}"><span class="ic">${icon(f.type)}</span><b>${m.n}${f.count > 1 ? " ×" + f.count : ""}</b><span>${hm(f.first)}–${hm(f.last)} · ${Math.round(f.len)} km trasy · ${f.minD < 1 ? "nad Polską" : "min. " + Math.round(f.minD) + " km od RP"}${f.loc ? " · " + esc(translit(f.loc)) : ""}</span><button class="btn pri" data-id="${esc(f.id)}">▶</button></div>` }).join("")
+  $("flights").innerHTML = fl.slice(0, 30).map(f => { const m = TM(f.type); return `<div class="fl" style="--c:${m.c}"><span class="ic">${icon(f.type)}</span><b>${m.n}${f.count > 1 ? " ×" + f.count : ""}${f.live ? ' <span class="tag pl">w powietrzu</span>' : f.killed ? ' <span class="tag ok">zestrzelony</span>' : ' <span class="tag adv">zakończony</span>'}</b><span>${hm(f.first)}–${hm(f.last)} · ${Math.round(f.len)} km trasy · ${f.reports} zgłoszeń · ${f.minD < 1 ? "nad Polską" : "min. " + Math.round(f.minD) + " km od RP"}${f.loc ? " · " + esc(translit(f.loc)) : ""}</span><button class="btn pri" data-id="${esc(f.id)}">▶</button></div>` }).join("")
 }
 $("flights").addEventListener("click", e => { const b = e.target.closest("button[data-id]"); if (!b) return; const f = flightList().find(x => x.id === b.dataset.id); if (!f) return; selected = null; renderDetail(); route = { id: f.id, type: f.type, pts: f.pts }; startReplay(); if (mobile()) setSheet("peek") });
 let allTracks = !!store.get("allTracks", false); $("all-tracks").checked = allTracks;
 $("all-tracks").onchange = e => { allTracks = e.target.checked; store.set("allTracks", allTracks) };
 function drawAllTracks() {
-  if (!allTracks || !histIndex.size) return;
+  if (!allTracks || !chains.length) return;
   const [a] = trange();
-  for (const [id, pts] of histIndex) {
-    const P = pts.filter(p => p[0] >= a); if (P.length < 2) continue; const col = TM((histMeta.get(id) || {}).type).c;
+  for (const C of chains) {
+    const P = C.pts.filter(p => p[0] >= a); if (P.length < 2) continue; const col = TM(C.type).c;
     const Q = P.map(p => map.latLngToContainerPoint([p[1], p[2]]));
     cx.beginPath(); cx.moveTo(Q[0].x, Q[0].y); for (const q of Q) cx.lineTo(q.x, q.y); cx.strokeStyle = col; cx.globalAlpha = .42; cx.lineWidth = 1.6; cx.stroke();
     const e = Q[Q.length - 1], f = Q[Q.length - 2], ang = Math.atan2(e.y - f.y, e.x - f.x);
@@ -241,6 +305,7 @@ function mergedPts(t, since, withCrumbs) {
   return out
 }
 function routeFor(id) {
+  const C = chainFor(id); if (C && C.pts.length >= 2) return C.pts.slice();
   const pts = [];
   for (const p of histIndex.get(id) || []) pts.push(p);
   for (const p of obs.get(id) || []) pts.push(p);
@@ -304,12 +369,35 @@ function fastPositions(ts) {
 }
 let lastCrumb = 0;
 
+/* ---------- zakończone: zniknęły z monitoringu lub zestrzelone wg kanałów (ostatnie 40 min) ---------- */
+const lostLayer = L.layerGroup().addTo(map);
+function renderLost() {
+  lostLayer.clearLayers(); if (mode !== "live") { $("lost").innerHTML = ""; $("lost-n").textContent = "—"; return }
+  const L2 = chains.filter(C => C.lost || (C.killed && !C.tail.live)).sort((a, b) => b.seen - a.seen).slice(0, 30);
+  $("lost-n").textContent = L2.length ? L2.length + " w 40 min" : "brak";
+  $("lost").innerHTML = L2.length ? L2.map(C => { const m = TM(C.type), k = !!C.killed, last = C.pts[C.pts.length - 1];
+    return `<button class="it lostit" data-ll="${last[1]},${last[2]}" style="--c:${k ? "#16a36a" : "#7b8aa3"}"><span class="ic">${icon(C.type)}</span><span class="t">${m.n}<span class="tag ${k ? "ok" : "adv"}">${k ? "zestrzelony" : "zniknął"}</span></span><span class="d">${hm(C.seen)}</span><span class="s">${esc(translit(C.loc || ""))} · trasa z ${C.ids.length} zgłoszeń${k ? " · wg " + esc(C.killed.ch) : ""}</span></button>` }).join("") : '<span class="empty">Brak obiektów, które zniknęły w ostatnich 40 minutach.</span>';
+  for (const C of L2) {
+    const last = C.pts[C.pts.length - 1], k = !!C.killed, col = k ? "#16a36a" : "#8a96ab";
+    if (C.pts.length > 1) L.polyline(C.pts.map(p => [p[1], p[2]]), { color: TM(C.type).c, weight: 1.6, opacity: .35, dashArray: "3 5", interactive: false }).addTo(lostLayer);
+    L.marker([last[1], last[2]], { keyboard: false, zIndexOffset: -100, icon: L.divIcon({ className: "", html: `<div class="xmk" style="--c:${col}">${k ? "✓" : "✕"}</div>`, iconSize: [20, 20], iconAnchor: [10, 10] }) })
+      .bindTooltip(`<b>${TM(C.type).n}: ${k ? "zestrzelony wg kanałów monitoringu" : "zniknął z monitoringu"}</b><br>Ostatnio ${hm(C.seen)} · ${esc(translit(C.loc || ""))}${k ? `<br><span style="color:var(--muted)">${esc(String(C.killed.text).slice(0, 140))}</span>` : '<br><span style="color:var(--muted)">Mógł zostać zestrzelony, rozbić się albo kanały przestały go śledzić.</span>'}`, { className: "tip" }).addTo(lostLayer);
+  }
+}
+$("lost").addEventListener("click", e => { const b = e.target.closest("[data-ll]"); if (b) { userMoved = true; map.flyTo(b.dataset.ll.split(",").map(Number), Math.max(map.getZoom(), 7.5), { duration: .8 }) } });
+
 /* ---------- budowa widoku ---------- */
 const MAXV = { uav: 260, recon: 220, missile: 1000, ballistic: 3000, kab: 600, mig31k: 3000, unknown: 400, fpv: 160 };
 const estCache = new Map();
 // prędkość i kurs z dwóch ostatnich prawdziwych pozycji (obserwacje, historia, trasa NEPTUN); bez śladu rysowanego co sekundę
 function estimateVel(t) {
-  const key = t.id + "|" + t.lat + "|" + t.lon + "|" + t.updatedAt; const c = estCache.get(t.id); if (c && c.key === key) return c.v;
+  const key = t.id + "|" + t.lat + "|" + t.lon + "|" + t.updatedAt + "|" + chainsAt; const c = estCache.get(t.id); if (c && c.key === key) return c.v;
+  const C = chainFor(t.id);
+  if (C && C.tail.id === t.id && C.pts.length >= 2) {
+    const b = C.pts[C.pts.length - 1]; let a = null;
+    for (let i = C.pts.length - 2; i >= 0; i--) { const p = C.pts[i]; if (b[0] - p[0] >= 60000 && km([p[1], p[2]], [b[1], b[2]]) > 3) { a = p; break } }
+    if (a) { const sp = km([a[1], a[2]], [b[1], b[2]]) / ((b[0] - a[0]) / 3600e3); if (sp >= 50 && sp <= (VKM[FAM(t.type)] || 6) * 60) { const v = { speedKmh: sp, bearingDeg: bearingOf([a[1], a[2]], [b[1], b[2]]), est: true }; estCache.set(t.id, { key, v }); return v } }
+  }
   const t1 = Date.parse(t.confirmedAt || t.updatedAt) || Date.now();
   const pts = mergedPts(t, t1 - 40 * 60000).filter(p => p[0] && p[0] < t1 - 20000 && km([p[1], p[2]], [t.lat, t.lon]) > 1.5);
   let v = null; const prev = pts[pts.length - 1];
@@ -332,7 +420,15 @@ function recompute() {
   for (const t of sourceThreats()) {
     if (t.status === "resolved" || t.lat == null) continue; const d = deadReckon(t, now);
     const o = { ...t, pos: (mode === "live" && dispPos.get(t.id)) || d.pos, hdg: d.hdg, speed: d.speed, est: d.est, type: TYPES[t.type] ? t.type : "unknown" };
-    if (mode === "live" && !t.areaOnly) { const mp = mergedPts(t, now - 90 * 60000, true).slice(-120); o.trail = mp.map(p => ({ lat: p[1], lon: p[2] })); o.trailT = mp.length ? mp[mp.length - 1][0] : 0 }
+    if (!t.areaOnly) {
+      const C = chainFor(t.id); o.chain = C; o.state = objState(o);
+      if (mode === "live") {
+        const base = C && C.tail.id === t.id ? C.pts.filter(p => p[0] > now - 120 * 60000) : [];
+        const mp = base.concat((crumbs.get(t.id) || []).filter(p => !base.length || p[0] > base[base.length - 1][0])).sort((a, b) => a[0] - b[0]);
+        const out = []; for (const p of mp) { const l = out[out.length - 1]; if (!l || km([l[1], l[2]], [p[1], p[2]]) > .2) out.push(p) }
+        o.trail = out.slice(-200).map(p => ({ lat: p[1], lon: p[2] })); o.trailT = out.length ? out[out.length - 1][0] : 0
+      } else if (C) { o.trail = C.pts.filter(p => p[0] <= now && p[0] > now - 120 * 60000).map(p => ({ lat: p[1], lon: p[2] })) }
+    }
     if (!t.areaOnly) { o.dist = inPL(o.pos) ? 0 : distPL(o.pos); o.inPL = o.dist === 0; o.toPL = o.advisory ? null : towardPL(o.pos, o.hdg) } else o.dist = null;
     view.push(o)
   }
@@ -378,7 +474,7 @@ const alertLayer = L.layerGroup().addTo(map), areaLayer = L.layerGroup().addTo(m
 function tipHTML(o) {
   const m = TM(o.type);
   return `<b style="color:${m.c}">${m.n}${o.count > 1 ? " ×" + o.count : ""}</b><br>${esc(place(o))}` + (o.areaOnly ? `<br><span style="color:#ffb020">Brak dokładnej pozycji: podano tylko obwód.</span>` :
-    `<br>${o.inPL ? '<b style="color:#ff3b4e">NAD POLSKĄ</b>' : "Do granicy RP: <b>" + Math.round(o.dist) + " km</b>"}${o.toPL ? '<br><b style="color:#ff3b4e">Kurs w stronę Polski</b>' : ""}`) + `<br><span style="color:#93a3bf">Kliknij, aby zobaczyć szczegóły</span>`
+    `<br>${o.inPL ? '<b style="color:#ff3b4e">NAD POLSKĄ</b>' : "Do granicy RP: <b>" + Math.round(o.dist) + " km</b>"}${o.toPL ? '<br><b style="color:#ff3b4e">Kurs w stronę Polski</b>' : ""}`) + (o.state ? `<br>Stan: <b style="color:${o.state.c}">${o.state.n}</b>` : "") + (o.chain && o.chain.ids.length > 1 ? `<br><span style="color:var(--muted)">Trasa z ${o.chain.ids.length} zgłoszeń</span>` : "") + `<br><span style="color:#93a3bf">Kliknij, aby zobaczyć szczegóły</span>`
 }
 function renderMarkers() {
   const seen = new Set(); areaLayer.clearLayers();
@@ -387,7 +483,8 @@ function renderMarkers() {
     if (o.areaOnly) { const ob = OBL_BY_NAME.get(o.region); if (ob) L.polygon(ob.g, { renderer: svgR, className: "area-hatch", color: m.c, weight: 2, dashArray: "6 6", fillColor: m.c, fillOpacity: .1 }).bindTooltip(tipHTML(o), { className: "tip", sticky: true }).on("click", () => select(o.id)).addTo(areaLayer); continue }
     seen.add(o.id); const hot = !o.advisory && (o.inPL || o.dist < thr || o.toPL);
     const h = o.hdg ?? 0, lbl = `${m.s}${o.dist < 600 ? " · " + (o.inPL ? "NAD RP" : Math.round(o.dist) + " km") : ""}`;
-    const html = `<div class="tk${hot ? " hot" : ""}${o.advisory ? " adv" : ""}${o.status === "stale" ? " stale" : ""}${o.hdg == null ? " nohdg" : ""}${selected === o.id ? " sel" : ""}" style="--c:${m.c};--h:${h}deg;--r:${o.hdg == null ? 0 : h}deg"><div class="cone"></div><div class="plate"><svg viewBox="0 0 24 24">${SVG[o.type]}</svg></div>${o.count > 1 ? `<span class="cnt">${o.count}</span>` : ""}<em>${lbl}</em></div>`;
+    const sk = (o.state || {}).k;
+    const html = `<div class="tk${hot && sk !== "old" && sk !== "killed" ? " hot" : ""}${o.advisory ? " adv" : ""}${o.status === "stale" || sk === "old" ? " stale" : ""}${sk === "killed" ? " killed" : ""}${o.lifecycle === "uncertain" ? " unc" : ""}${o.hdg == null ? " nohdg" : ""}${selected === o.id ? " sel" : ""}" style="--c:${m.c};--h:${h}deg;--r:${o.hdg == null ? 0 : h}deg"><div class="cone"></div><div class="plate"><svg viewBox="0 0 24 24">${SVG[o.type]}</svg></div>${o.count > 1 ? `<span class="cnt">${o.count}</span>` : ""}<em>${lbl}</em></div>`;
     let mk = markers.get(o.id);
     if (!mk) { mk = L.marker(o.pos, { keyboard: false, riseOnHover: true, icon: L.divIcon({ className: "", html, iconSize: [46, 46], iconAnchor: [23, 23] }) }).bindTooltip("", { className: "tip", direction: "top", offset: [0, -18] }).on("click", () => select(o.id)).addTo(tkLayer); mk._h = html; markers.set(o.id, mk) }
     else { mk.setLatLng(o.pos); if (mk._h !== html) { mk.setIcon(L.divIcon({ className: "", html, iconSize: [46, 46], iconAnchor: [23, 23] })); mk._h = html } }
@@ -422,7 +519,7 @@ function renderList() {
     return `<button class="it${hot ? " hot" : ""}${selected === o.id ? " sel" : ""}" data-id="${esc(o.id)}" style="--c:${m.c}"><span class="ic">${icon(o.type, o.hdg)}</span>
       <span class="t">${m.n}${o.count > 1 ? " ×" + o.count : ""}${o.inPL ? '<span class="tag pl">nad RP</span>' : o.toPL ? '<span class="tag pl">kurs na RP</span>' : ""}${o.advisory ? '<span class="tag adv">obserwacja</span>' : ""}</span>
       <span class="d">${o.inPL ? "0" : Math.round(o.dist)} km</span>
-      <span class="s">${esc(place(o))}${o.updatedAt ? " · " + fmtAgo(o.updatedAt) : ""}</span></button>`
+      <span class="s"><i class="sd" style="--sc:${(o.state || {}).c || "#7b8aa3"}"></i>${esc((o.state || {}).n || "")} · ${esc(place(o))}${o.updatedAt ? " · " + fmtAgo(o.updatedAt) : ""}</span></button>`
   });
   for (const o of area.slice(0, 8)) { const m = TM(o.type); rows.push(`<button class="it" data-id="${esc(o.id)}" style="--c:${m.c}"><span class="ic">${icon(o.type)}</span><span class="t">${m.n}${o.count > 1 ? " ×" + o.count : ""}<span class="tag area">tylko obwód</span></span><span class="d">—</span><span class="s">${esc(plRegion(o.region))}${o.updatedAt ? " · " + fmtAgo(o.updatedAt) : ""}</span></button>`) }
   $("list").innerHTML = rows.join("") || '<span class="empty">Brak aktywnych zagrożeń w powietrzu.</span>';
@@ -445,7 +542,9 @@ function renderDetail() {
       <div><span>Prędkość${o.est ? " (szac.)" : ""}</span><b>${o.speed ? Math.round(o.speed) + " km/h" : "—"}</b></div>
       <div><span>Niepewność</span><b>${o.uncertaintyKm != null ? "±" + o.uncertaintyKm + " km" : "—"}</b></div>
       <div><span>Źródła</span><b>${o.sourceCount ?? "—"}</b></div>
-      <div><span>Trasa</span><b>${(o.trail || []).length} pkt</b></div></div></div>
+      <div><span>Trasa</span><b>${o.chain ? o.chain.ids.length + " zgł." : "—"}</b></div></div></div>
+    ${o.state ? `<div class="chips"><span class="chip" style="border-color:${o.state.c};background:color-mix(in srgb,${o.state.c} 16%,transparent);color:var(--fg)">Stan: ${o.state.n}</span></div>` : ""}
+    ${o.chain && o.chain.killed ? `<p class="note">Kanał ${esc(o.chain.killed.ch)} (${hm(o.chain.killed.t)}): „${esc(String(o.chain.killed.text).slice(0, 160))}”</p>` : ""}
     ${conf != null ? `<div style="display:grid;gap:4px"><span class="note">Pewność danych: ${{ 33: "niska", 66: "średnia", 100: "wysoka" }[conf]}</span><div class="conf"><i style="width:${conf}%"></i></div></div>` : ""}
     <p class="note">${esc(plExplain(o))}</p>
     ${o.areaOnly ? '<p class="note">Źródła podały tylko obwód, bez miejscowości. Dlatego obiekt nie ma punktu na mapie.</p>' : ""}
@@ -513,9 +612,9 @@ const BOOT = Date.now();
 const events = store.get("events", []).filter(e => e.t > Date.now() - 24 * 3600e3);
 const evKeys = new Set(events.map(e => e.k));
 let unread = 0;
-function addEvent(level, title, body, key, ll) {
+function addEvent(level, title, body, key, ll, ic) {
   if (key && evKeys.has(key)) return; if (key) evKeys.add(key);
-  const e = { t: Date.now(), l: level, title, body, k: key, ll }; events.unshift(e); if (events.length > 80) events.length = 80;
+  const e = { t: Date.now(), l: level, title, body, k: key, ll, icon: ic }; events.unshift(e); if (events.length > 80) events.length = 80;
   store.set("events", events); unread++; renderEvents(true);
   if (level >= 1 && mode === "live" && (Date.now() - BOOT > 20000 || level >= 2)) showBanner(e)
 }
@@ -526,28 +625,52 @@ function renderEvents(fresh) {
   $("events").innerHTML = events.slice(0, 40).map((e, i) => `<button class="ev l${e.l}${fresh && i < unread ? " new" : ""}" data-i="${i}"><i></i><b>${esc(e.title)}</b><span><time>${hm(e.t)}</time>${esc(e.body || "")}</span></button>`).join("")
 }
 $("events").addEventListener("click", ev => { const b = ev.target.closest(".ev"); if (!b) return; const e = events[+b.dataset.i]; unread = 0; renderEvents(); if (e && e.ll) { userMoved = true; map.flyTo(e.ll, Math.max(map.getZoom(), 7), { duration: .8 }) } });
-let bannerT;
+/* alerty: karty z ikoną, poziomem i paskiem czasu; najwyżej 3 naraz */
+const AL_ICON = {
+  2: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 1.67c.955 0 1.845 .467 2.39 1.247l.105 .16l8.114 13.548a2.914 2.914 0 0 1 -2.307 4.363l-.195 .008h-16.225a2.914 2.914 0 0 1 -2.582 -4.2l.099 -.185l8.11 -13.538a2.914 2.914 0 0 1 2.491 -1.403zm.01 13.33l-.127 .007a1 1 0 0 0 0 1.986l.117 .007l.127 -.007a1 1 0 0 0 0 -1.986l-.117 -.007zm-.01 -7a1 1 0 0 0 -.993 .883l-.007 .117v4l.007 .117a1 1 0 0 0 1.986 0l.007 -.117v-4l-.007 -.117a1 1 0 0 0 -.993 -.883z"/></svg>',
+  1: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 5a2 2 0 1 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3h-16a4 4 0 0 0 2 -3v-3a7 7 0 0 1 4 -6"/><path d="M9 17v1a3 3 0 0 0 6 0v-1"/></svg>',
+  0: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9h.01"/><path d="M11 12h1v4h1"/><path d="M12 3a9 9 0 1 0 0 18a9 9 0 0 0 0 -18z"/></svg>'
+};
+const AL_LV = { 2: ["ALARM", "#ff2d43"], 1: ["OSTRZEŻENIE", "#ff9f1a"], 0: ["INFORMACJA", "#38a8ff"] };
+function closeAlert(el) { if (!el || el.classList.contains("out")) return; el.classList.add("out"); setTimeout(() => el.remove(), 350) }
 function showBanner(e) {
-  const bn = $("banner"); bn.className = "hud banner glass l" + e.l; $("banner-i").textContent = e.l >= 2 ? "!" : "⚠";
-  $("banner-t").textContent = e.title; $("banner-b").textContent = e.body || ""; bn.hidden = false; bn.style.animation = "none"; bn.offsetHeight; bn.style.animation = "";
-  bn.onclick = ev => { if (ev.target.id === "banner-x") { bn.hidden = true; return } bn.hidden = true; unread = 0; renderEvents(); if (e.ll) { userMoved = true; map.flyTo(e.ll, Math.max(map.getZoom(), 7), { duration: .8 }) } };
-  clearTimeout(bannerT); if (e.l < 2) bannerT = setTimeout(() => bn.hidden = true, 9000)
+  const box = $("alerts"), lv = Math.max(0, Math.min(2, e.l)), [lname, col] = AL_LV[lv], dur = lv >= 2 ? 0 : 12000;
+  const el = document.createElement("div"); el.className = "al l" + lv; el.style.setProperty("--ac", col); el.setAttribute("role", "alert");
+  el.innerHTML = `<span class="ai">${e.icon || AL_ICON[lv]}</span><span class="ah">${lname}<time>${hm(e.t)}</time></span><b></b><p></p><button class="ax" aria-label="Zamknij">✕</button>${dur ? `<i class="bar" style="animation-duration:${dur}ms"></i>` : ""}`;
+  el.querySelector("b").textContent = e.title; el.querySelector("p").textContent = e.body || "";
+  el.onclick = ev => { if (ev.target.closest(".ax")) { closeAlert(el); return } closeAlert(el); unread = 0; renderEvents(); if (e.ll) { userMoved = true; map.flyTo(e.ll, Math.max(map.getZoom(), 7), { duration: .8 }) } };
+  box.prepend(el); while (box.children.length > (mobile() ? 2 : 3)) box.lastElementChild.remove();
+  if (dur) setTimeout(() => closeAlert(el), dur);
+  playAlert(lv)
 }
 renderEvents();
 
 /* ---------- poziom zagrożenia, dźwięk, powiadomienia na ekranie ---------- */
 let soundOn = false, actx = null, lastLevel = -1; const warned = new Set();
-function beep(n = 3) { if (!soundOn || !actx) return; const t = actx.currentTime; for (let i = 0; i < n; i++) { const o = actx.createOscillator(), g = actx.createGain(); o.type = "sawtooth"; o.frequency.setValueAtTime(960, t + i * .4); o.frequency.exponentialRampToValueAtTime(540, t + i * .4 + .32); g.gain.setValueAtTime(.06, t + i * .4); g.gain.exponentialRampToValueAtTime(.001, t + i * .4 + .36); o.connect(g).connect(actx.destination); o.start(t + i * .4); o.stop(t + i * .4 + .38) } }
+let lastSound = 0;
+function tone(f, t0, d, type = "sine", vol = .12, f2) {
+  const o = actx.createOscillator(), g = actx.createGain(); o.type = type; o.frequency.setValueAtTime(f, t0); if (f2) o.frequency.exponentialRampToValueAtTime(f2, t0 + d);
+  g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(vol, t0 + .02); g.gain.exponentialRampToValueAtTime(.0008, t0 + d);
+  o.connect(g).connect(actx.destination); o.start(t0); o.stop(t0 + d + .05)
+}
+function playAlert(level) {
+  if (!soundOn || !actx || Date.now() - lastSound < 1500) return; lastSound = Date.now(); const t = actx.currentTime + .02;
+  if (level >= 2) {   // syrena: narastający i opadający dwuton, 3 cykle
+    for (let i = 0; i < 3; i++) { tone(620, t + i * 1.1, .55, "triangle", .16, 1040); tone(1040, t + i * 1.1 + .55, .55, "triangle", .16, 620); tone(310, t + i * 1.1, 1.1, "sine", .05) }
+  } else if (level === 1) {   // gong: dwa dźwięki z alikwotami
+    for (const [f, dt] of [[988, 0], [740, .32]]) { tone(f, t + dt, 1.1, "sine", .14); tone(f * 2, t + dt, .5, "sine", .04); tone(f * 3.01, t + dt, .25, "sine", .02) }
+  } else tone(1318, t, .35, "sine", .08);
+}
+const beep = (n = 1) => playAlert(n >= 5 ? 2 : n >= 2 ? 1 : 0);
 let swReg = null;
 async function notify(title, body, tag) {
-  beep();
   try {
     if (!("Notification" in window) || Notification.permission !== "granted") return;
     const opt = { body, tag, renotify: true, icon: "icons/icon-192.png", badge: "icons/badge.png", vibrate: [300, 100, 300, 100, 600] };
     if (swReg) await swReg.showNotification(title, opt); else new Notification(title, opt)
   } catch (e) { }
 }
-$("b-snd").onclick = e => { soundOn = !soundOn; try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); actx.resume() } catch (_) { } e.currentTarget.setAttribute("aria-pressed", soundOn); e.currentTarget.textContent = "Dźwięk: " + (soundOn ? "włączony" : "wyłączony"); if (soundOn) beep(1) };
+$("b-snd").onclick = e => { soundOn = !soundOn; try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); actx.resume() } catch (_) { } e.currentTarget.setAttribute("aria-pressed", soundOn); e.currentTarget.textContent = "Dźwięk: " + (soundOn ? "włączony" : "wyłączony"); if (soundOn) { lastSound = 0; playAlert(1) } };
 setInterval(() => { $("clock").textContent = new Date().toLocaleTimeString("pl-PL") }, 1000);
 function evalLevel() {
   const act = view.filter(o => !o.areaOnly && !o.advisory && o.status !== "stale");
@@ -557,10 +680,11 @@ function evalLevel() {
   if (mode !== "live" || !live.haveData) return;
   for (const o of act) {
     const nm = TM(o.type).n + (o.count > 1 ? " ×" + o.count : "");
-    if (o.inPL) addEvent(2, `${nm} nad Polską`, `Okolice m. ${nearestPLCity(o.pos)}. Słuchaj komunikatów RCB.`, "in:" + o.id, o.pos);
-    else if (o.dist < thr) addEvent(o.toPL ? 2 : 1, `${nm} ${Math.round(o.dist)} km od granicy`, `${place(o)}${o.toPL ? ". Kurs w stronę Polski" : ""}.`, "near" + thr + ":" + o.id, o.pos);
-    else if (o.toPL && o.dist < thr * 2.5) addEvent(1, `${nm} leci w stronę Polski`, `${place(o)}, ${Math.round(o.dist)} km od granicy.`, "tow:" + o.id, o.pos);
-    else if (o.dist < 350) addEvent(0, `Nowy obiekt: ${nm}`, `${place(o)}, ${Math.round(o.dist)} km od granicy RP.`, "new:" + o.id, o.pos);
+    const ic = `<svg viewBox="0 0 24 24">${SVG[o.type] || SVG.unknown}</svg>`;
+    if (o.inPL) addEvent(2, `${nm} nad Polską`, `Okolice m. ${nearestPLCity(o.pos)}. Słuchaj komunikatów RCB.`, "in:" + o.id, o.pos, ic);
+    else if (o.dist < thr) addEvent(o.toPL ? 2 : 1, `${nm} ${Math.round(o.dist)} km od granicy`, `${place(o)}${o.toPL ? ". Kurs w stronę Polski" : ""}.`, "near" + thr + ":" + o.id, o.pos, ic);
+    else if (o.toPL && o.dist < thr * 2.5) addEvent(1, `${nm} leci w stronę Polski`, `${place(o)}, ${Math.round(o.dist)} km od granicy.`, "tow:" + o.id, o.pos, ic);
+    else if (o.dist < 350) addEvent(0, `Nowy obiekt: ${nm}`, `${place(o)}, ${Math.round(o.dist)} km od granicy RP.`, "new:" + o.id, o.pos, ic);
   }
   const drones = act.filter(o => o.type === "uav").reduce((a, o) => a + (o.count > 1 ? o.count : 1), 0);
   if (drones >= 25) addEvent(1, `Zmasowany atak dronów: ${drones} w powietrzu`, "Obserwuj sytuację przy granicy i komunikaty RCB.", "mass:" + Math.floor(Date.now() / 3 / 3600e3));
@@ -1003,11 +1127,11 @@ let milState = { ac: [], trails: {} }, milOn = store.get("milOn", true) !== fals
 $("mil-on").checked = milOn; $("mil-on").onchange = e => { milOn = e.target.checked; store.set("milOn", milOn); renderMil() };
 const milPos = (a, now) => { if (!a.gs || a.trk == null) return [a.lat, a.lon]; const h = Math.min(90, Math.max(0, (now - (a.ts || milState.t)) / 1000)) / 3600; return move([a.lat, a.lon], a.trk, a.gs * 1.852 * h) };
 function renderMil() {
-  const now = Date.now(), list = (milState.ac || []).map(a => ({ ...a, k: milKind(a), dist: inPL([a.lat, a.lon]) ? 0 : distPL([a.lat, a.lon]) })).sort((a, b) => a.dist - b.dist);
-  $("mil-n").textContent = list.length ? list.length + " w regionie" : "brak";
+  const now = Date.now(), list = (milState.ac || []).filter(a => inPL([a.lat, a.lon])).map(a => ({ ...a, k: milKind(a), dist: 0 })).sort((a, b) => (b.alt || 0) - (a.alt || 0));
+  $("mil-n").textContent = list.length ? list.length + " nad Polską" : "brak";
   const blocked = !list.length && milState.err && (!milState.t || milState.err.t > milState.t);
   if (blocked) { $("mil-n").textContent = "niedostępne"; $("mil").innerHTML = '<span class="empty">Darmowe serwisy ADS-B (adsb.lol, adsb.fi) odrzucają teraz zapytania z serwera aplikacji, więc samoloty wojskowe nie są pokazywane. Do stałego działania potrzebny jest klucz API.</span>' }
-  else $("mil").innerHTML = list.length ? list.slice(0, 20).map(a => `<button class="mi" data-h="${esc(a.h)}" style="--mc:${a.k.c}"><span class="ic">${JET}</span><b>${esc(a.cs || a.r || a.h.toUpperCase())}</b><span class="d">${a.dist < 1 ? "nad RP" : Math.round(a.dist) + " km"}</span><span>${esc(a.d || a.t || "")} · ${a.k.n}${a.alt != null ? " · " + Math.round(a.alt * .3048).toLocaleString("pl-PL") + " m" : ""}${a.gs ? " · " + Math.round(a.gs * 1.852) + " km/h" : ""}</span></button>`).join("") : '<span class="empty">Brak samolotów wojskowych nadających pozycję w regionie.</span>';
+  else $("mil").innerHTML = list.length ? list.slice(0, 20).map(a => `<button class="mi" data-h="${esc(a.h)}" style="--mc:${a.k.c}"><span class="ic">${JET}</span><b>${esc(a.cs || a.r || a.h.toUpperCase())}</b><span class="d">${a.dist < 1 ? "nad RP" : Math.round(a.dist) + " km"}</span><span>${esc(a.d || a.t || "")} · ${a.k.n}${a.alt != null ? " · " + Math.round(a.alt * .3048).toLocaleString("pl-PL") + " m" : ""}${a.gs ? " · " + Math.round(a.gs * 1.852) + " km/h" : ""}</span></button>`).join("") : '<span class="empty">Brak samolotów wojskowych nadających pozycję nad Polską.</span>';
   const seen = new Set();
   if (milOn) for (const a of list) {
     seen.add(a.h); const html = `<div class="mil" style="--mc:${a.k.c};--r:${Math.round(a.trk || 0)}deg">${JET}<em>${esc(a.cs || a.t || "MIL")}${a.alt != null ? " · FL" + Math.round(a.alt / 100) : ""}</em></div>`;
@@ -1088,4 +1212,5 @@ pollAlerts(); pollMsgs();
 setInterval(() => { if (!document.hidden) pollAlerts() }, 30000);
 setInterval(() => { if (!document.hidden) pollMsgs() }, 20000);
 setInterval(() => { if (live.haveData && mode === "live" && !document.hidden) recompute() }, 2000);
+setInterval(() => { if (!document.hidden && (live.haveData || hist.snaps.length)) { try { buildChains(); renderLost() } catch (e) { } } }, 10000);
 refreshAlerts(); setLabel(); loadHistory(); drawTrack();
