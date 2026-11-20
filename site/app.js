@@ -46,7 +46,15 @@ const TYPES = {
   kab: { n: "Bomba szybująca KAB", s: "KAB", c: "#ffe14d" }, mig31k: { n: "MiG-31K w powietrzu", s: "MiG-31K", c: "#b18cff" },
   unknown: { n: "Nieznany obiekt", s: "OBIEKT", c: "#9aa7bd" }
 };
-const TM = t => TYPES[t] || TYPES.unknown;
+const LIGHT_TYPE = { uav: "#e0213a", recon: "#d4631a", missile: "#c77700", ballistic: "#c42aa6", kab: "#a88a00", mig31k: "#7a4fd6", unknown: "#5f6f8c" };
+const themeSetting = () => document.documentElement.dataset.theme || "auto";
+const isLight = () => themeSetting() === "light" || (themeSetting() === "auto" && matchMedia("(prefers-color-scheme: light)").matches);
+const TM = t => { const m = TYPES[t] || TYPES.unknown; return isLight() ? { ...m, c: LIGHT_TYPE[t] || LIGHT_TYPE.unknown } : m };
+const PALS = {
+  dark: { nei: { UA: "#0f1c30", BY: "#131a2b", RU: "#151829" }, land: "#0c1626", line: "#1a2840", lineX: "#2c2f48", obl: "#203152", pl: "#0e1d35", plLine: "#ffffff", glow: .08, rad: "56,225,255", hist: "255,190,80", text: "#ffffff", sub: "#cfe0f5", labelBg: "rgba(5,11,22,.85)", flow: "#ffffff", meta: "#050b16" },
+  light: { nei: { UA: "#f6eef0", BY: "#eceff5", RU: "#eaecf3" }, land: "#f4f7fb", line: "#c2cede", lineX: "#cdbfc9", obl: "#d3dce8", pl: "#ffffff", plLine: "#13233d", glow: .1, rad: "3,120,150", hist: "190,110,0", text: "#0b1a2e", sub: "#33435d", labelBg: "rgba(255,255,255,.94)", flow: "#0b1a2e", meta: "#e7edf5" }
+};
+const P = () => isLight() ? PALS.light : PALS.dark;
 const icon = (t, rot) => `<svg viewBox="0 0 24 24"${rot != null ? ` style="transform:rotate(${Math.round(rot)}deg)"` : ""}>${SVG[t] || SVG.unknown}</svg>`;
 $("legend-rows").innerHTML = Object.entries(TYPES).map(([k, m]) => `<div><span style="color:${m.c}">${icon(k)}</span>${m.n}</div>`).join("");
 
@@ -64,16 +72,24 @@ map.getContainer().addEventListener("wheel", () => userMoved = true, { passive: 
 $("b-home").onclick = () => { userMoved = false; map.flyToBounds(HOME(), { ...homePad(), duration: .9 }) };
 const zcls = () => map.getContainer().classList.toggle("lowz", map.getZoom() < 6.25); map.on("zoomend", zcls); zcls();
 
-const NEI = { UA: "#0f1c30", BY: "#131a2b", RU: "#151829" };
-for (const [k, polys] of Object.entries(G)) { if (k === "PL") continue; L.polygon(polys, { color: NEI[k] ? "#2c2f48" : "#1a2840", weight: 1, fillColor: NEI[k] || "#0c1626", fillOpacity: 1, interactive: false }).addTo(map) }
-for (const o of UA.oblasts) L.polygon(o.g, { color: "#203152", weight: .8, fill: false, interactive: false }).addTo(map);
+const base = { nei: [], obl: [], pl: [] };
+for (const [k, polys] of Object.entries(G)) { if (k === "PL") continue; base.nei.push([k, L.polygon(polys, { weight: 1, fillOpacity: 1, interactive: false }).addTo(map)]) }
+for (const o of UA.oblasts) base.obl.push(L.polygon(o.g, { weight: .8, fill: false, interactive: false }).addTo(map));
 if (G.PL) {
-  L.polygon(G.PL, { stroke: false, fillColor: "#0e1d35", fillOpacity: 1, interactive: false }).addTo(map);
-  L.polygon(G.PL, { color: "#ff3b4e", weight: 18, opacity: .08, fill: false, interactive: false }).addTo(map);
-  L.polygon(G.PL, { color: "#ff3b4e", weight: 7, opacity: .18, fill: false, interactive: false }).addTo(map);
-  L.polygon(G.PL, { color: "#ffffff", weight: 2.6, opacity: .95, fill: false, interactive: false }).addTo(map);
-  L.polygon(G.PL, { color: "#ff3b4e", weight: 1.6, opacity: 1, fill: false, interactive: false, renderer: svgR, className: "pl-march" }).addTo(map);
+  base.pl = [L.polygon(G.PL, { stroke: false, fillOpacity: 1, interactive: false }).addTo(map),
+    L.polygon(G.PL, { color: "#ff3b4e", weight: 18, opacity: .08, fill: false, interactive: false }).addTo(map),
+    L.polygon(G.PL, { color: "#ff3b4e", weight: 7, opacity: .18, fill: false, interactive: false }).addTo(map),
+    L.polygon(G.PL, { weight: 2.6, opacity: .95, fill: false, interactive: false }).addTo(map),
+    L.polygon(G.PL, { color: "#ff3b4e", weight: 1.6, opacity: 1, fill: false, interactive: false, renderer: svgR, className: "pl-march" }).addTo(map)];
 }
+function styleBase() {
+  const p = P();
+  for (const [k, l] of base.nei) l.setStyle({ color: p.nei[k] ? p.lineX : p.line, fillColor: p.nei[k] || p.land });
+  for (const l of base.obl) l.setStyle({ color: p.obl });
+  if (base.pl.length) { base.pl[0].setStyle({ fillColor: p.pl }); base.pl[1].setStyle({ opacity: p.glow }); base.pl[3].setStyle({ color: p.plLine }) }
+  const meta = document.querySelector('meta[name="theme-color"]'); if (meta) meta.content = p.meta;
+}
+styleBase();
 const label = (ll, html, cls) => L.marker(ll, { interactive: false, keyboard: false, icon: L.divIcon({ className: "", html: `<div class="${cls}">${html}</div>`, iconSize: null, iconAnchor: [3, 7] }) });
 [["POLSKA", 52.1, 18.2, "country pl"], ["UKRAINA", 49.0, 30.5, "country"], ["BIAŁORUŚ", 53.5, 27.8, "country"], ["LITWA", 55.35, 24.0, "country"], ["ROSJA", 54.95, 21.3, "country"], ["SŁOWACJA", 48.75, 19.3, "country"], ["CZECHY", 49.75, 15.3, "country"], ["MOŁDAWIA", 47.2, 28.4, "country"]]
   .forEach(([t, a, b, c]) => label([a, b], t, c).addTo(map));
@@ -108,7 +124,7 @@ function frame(ts) {
   L.DomUtil.setPosition(cv, map.containerPointToLayerPoint([0, 0]));
   fastPositions(ts);
   const s = map.getSize(); cx.setTransform(dpr, 0, 0, dpr, 0, 0); cx.clearRect(0, 0, s.x, s.y);
-  const hist = mode === "hist", RCOL = hist ? "255,190,80" : "56,225,255";
+  const hist = mode === "hist", PP = P(), RCOL = hist ? PP.hist : PP.rad;
   const c = map.latLngToContainerPoint(RC), edge = map.latLngToContainerPoint(move(RC, 90, RANGE)); const rad = Math.abs(edge.x - c.x);
   cx.lineWidth = 1; cx.font = "500 10px 'JetBrains Mono',monospace";
   for (let k = 100; k <= RANGE; k += 100) {
@@ -136,14 +152,14 @@ function frame(ts) {
       }
       for (let i = 0; i < pts.length - 1; i++) { cx.beginPath(); cx.arc(pts[i].x, pts[i].y, 1.8, 0, 7); cx.fillStyle = col; cx.globalAlpha = .5; cx.fill() }
       cx.globalAlpha = 1; cx.shadowBlur = 0;
-      if (!reduce) { cx.setLineDash([3, 13]); cx.lineDashOffset = -ts / 40; cx.beginPath(); cx.moveTo(pts[0].x, pts[0].y); for (let i = 1; i < pts.length; i++) cx.lineTo(pts[i].x, pts[i].y); cx.strokeStyle = "#fff"; cx.globalAlpha = .55; cx.lineWidth = 1.3; cx.stroke(); cx.setLineDash([]); cx.lineDashOffset = 0; cx.globalAlpha = 1 }
+      if (!reduce) { cx.setLineDash([3, 13]); cx.lineDashOffset = -ts / 40; cx.beginPath(); cx.moveTo(pts[0].x, pts[0].y); for (let i = 1; i < pts.length; i++) cx.lineTo(pts[i].x, pts[i].y); cx.strokeStyle = PP.flow; cx.globalAlpha = .55; cx.lineWidth = 1.3; cx.stroke(); cx.setLineDash([]); cx.lineDashOffset = 0; cx.globalAlpha = 1 }
     }
     if (t.hdg != null && !t.advisory) {
       const len = t.speed ? t.speed / (isSel ? 2 : 6) : 25, ahead = map.latLngToContainerPoint(move(t.pos, t.hdg, len));
       cx.setLineDash([4, 6]); cx.beginPath(); cx.moveTo(here.x, here.y); cx.lineTo(ahead.x, ahead.y); cx.strokeStyle = col; cx.globalAlpha = isSel ? .95 : .65; cx.lineWidth = isSel ? 1.8 : 1.2; cx.stroke(); cx.setLineDash([]); cx.globalAlpha = 1;
       if (isSel && t.speed) for (let m = 5; m <= 30; m += 5) {
         const q = map.latLngToContainerPoint(move(t.pos, t.hdg, t.speed * m / 60)); cx.beginPath(); cx.arc(q.x, q.y, m % 10 ? 2.5 : 3.5, 0, 7); cx.fillStyle = col; cx.fill();
-        if (m % 10 === 0) { cx.fillStyle = "#fff"; cx.font = "600 10px 'JetBrains Mono',monospace"; cx.fillText(`+${m} min`, q.x + 7, q.y + 3) }
+        if (m % 10 === 0) { cx.fillStyle = PP.text; cx.font = "600 10px 'JetBrains Mono',monospace"; cx.fillText(`+${m} min`, q.x + 7, q.y + 3) }
       }
     }
     if (!reduce) {
@@ -155,9 +171,32 @@ function frame(ts) {
 requestAnimationFrame(frame);
 /* pełna trasa wybranego obiektu i animacja lotu */
 let route = null, replay = null;
+const obs = new Map();        // pozycje zaobserwowane od otwarcia strony: id -> [[t,lat,lon]]
+let histIndex = new Map();    // z historii: id -> [[t,lat,lon]]
+function recordObs(t) {
+  if (!t || t.areaOnly || t.lat == null) return;
+  const a = obs.get(t.id) || [], l = a[a.length - 1], tt = Date.parse(t.updatedAt) || Date.now();
+  if (!l || km([l[1], l[2]], [t.lat, t.lon]) > .3) { a.push([tt, t.lat, t.lon]); if (a.length > 120) a.shift(); obs.set(t.id, a) }
+}
+function buildHistIndex() {
+  histIndex = new Map();
+  for (const [t, rows] of hist.snaps) for (const r of rows) { if (r[6] & 1) continue; const a = histIndex.get(r[0]) || []; const l = a[a.length - 1]; if (!l || l[1] !== r[2] || l[2] !== r[3]) a.push([t, r[2], r[3]]); histIndex.set(r[0], a) }
+}
+function mergedPts(t, since) {
+  const pts = [];
+  for (const q of t.trail || []) { const tt = Date.parse(q.t); pts.push([isFinite(tt) ? tt : 0, q.lat, q.lon]) }
+  for (const p of histIndex.get(t.id) || []) if (p[0] >= since) pts.push(p);
+  for (const p of obs.get(t.id) || []) if (p[0] >= since) pts.push(p);
+  pts.sort((a, b) => a[0] - b[0]);
+  const out = []; for (const p of pts) { const l = out[out.length - 1]; if (!l || km([l[1], l[2]], [p[1], p[2]]) > .3) out.push(p) }
+  // ostatni punkt to bieżąca pozycja: nie dubluj go w trasie
+  if (out.length && km([out[out.length - 1][1], out[out.length - 1][2]], [t.lat, t.lon]) < .3) out.pop();
+  return out
+}
 function routeFor(id) {
   const pts = [];
-  for (const [t, rows] of hist.snaps) { const r = rows.find(x => x[0] === id); if (r && !(r[6] & 1)) pts.push([t, r[2], r[3]]) }
+  for (const p of histIndex.get(id) || []) pts.push(p);
+  for (const p of obs.get(id) || []) pts.push(p);
   const lt = live.threats.get(id);
   if (lt && !lt.areaOnly) { for (const q of lt.trail || []) { const t = Date.parse(q.t); if (isFinite(t)) pts.push([t, q.lat, q.lon]) } pts.push([Date.parse(lt.updatedAt) || Date.now(), lt.lat, lt.lon]) }
   pts.sort((a, b) => a[0] - b[0]);
@@ -169,7 +208,7 @@ function drawRoute(ts) {
   const col = TM(route.type).c, P = route.pts.map(p => map.latLngToContainerPoint([p[1], p[2]]));
   cx.setLineDash([2, 5]); cx.beginPath(); cx.moveTo(P[0].x, P[0].y); for (const q of P) cx.lineTo(q.x, q.y); cx.strokeStyle = col; cx.globalAlpha = .5; cx.lineWidth = 1.5; cx.stroke(); cx.setLineDash([]); cx.globalAlpha = 1;
   cx.beginPath(); cx.arc(P[0].x, P[0].y, 4, 0, 7); cx.strokeStyle = col; cx.lineWidth = 2; cx.stroke();
-  cx.fillStyle = "#cfe0f5"; cx.font = "600 10px 'JetBrains Mono',monospace"; cx.fillText("start " + hm(route.pts[0][0]), P[0].x + 7, P[0].y - 6);
+  const PP = P(); cx.fillStyle = PP.sub; cx.font = "600 10px 'JetBrains Mono',monospace"; cx.fillText("start " + hm(route.pts[0][0]), P[0].x + 7, P[0].y - 6);
   if (!replay) return;
   const dur = replay.dur, p = Math.min(1, (ts - replay.start) / dur);
   if (ts - replay.start > dur + 1800) { replay = null; renderDetail(); return }
@@ -185,8 +224,8 @@ function drawRoute(ts) {
   cx.fillStyle = col; cx.shadowColor = col; cx.shadowBlur = 20; cx.fill(); cx.restore(); cx.shadowBlur = 0;
   cx.beginPath(); cx.arc(H.x, H.y, 16 + 6 * Math.sin(ts / 120), 0, 7); cx.strokeStyle = col; cx.globalAlpha = .5; cx.lineWidth = 1.5; cx.stroke(); cx.globalAlpha = 1;
   const lbl = hm(tt); cx.font = "700 12px 'JetBrains Mono',monospace"; const w = cx.measureText(lbl).width + 12;
-  cx.fillStyle = "rgba(5,11,22,.85)"; cx.fillRect(H.x + 16, H.y - 26, w, 20); cx.strokeStyle = col; cx.lineWidth = 1; cx.strokeRect(H.x + 16, H.y - 26, w, 20);
-  cx.fillStyle = "#fff"; cx.fillText(lbl, H.x + 22, H.y - 12)
+  cx.fillStyle = PP.labelBg; cx.fillRect(H.x + 16, H.y - 26, w, 20); cx.strokeStyle = col; cx.lineWidth = 1; cx.strokeRect(H.x + 16, H.y - 26, w, 20);
+  cx.fillStyle = PP.text; cx.fillText(lbl, H.x + 22, H.y - 12)
 }
 function startReplay() {
   if (!route || route.pts.length < 2) return;
@@ -219,6 +258,7 @@ function recompute() {
   for (const t of sourceThreats()) {
     if (t.status === "resolved" || t.lat == null) continue; const d = deadReckon(t, now);
     const o = { ...t, pos: d.pos, hdg: d.hdg, speed: d.speed, type: TYPES[t.type] ? t.type : "unknown" };
+    if (mode === "live" && !t.areaOnly) o.trail = mergedPts(t, now - 90 * 60000).slice(-60).map(p => ({ lat: p[1], lon: p[2] }));
     if (!t.areaOnly) { o.dist = inPL(o.pos) ? 0 : distPL(o.pos); o.inPL = o.dist === 0; o.toPL = o.advisory ? null : towardPL(o.pos, o.hdg) } else o.dist = null;
     view.push(o)
   }
@@ -346,9 +386,14 @@ function renderAlerts(n) {
   setStat("s-obl", new Set(n.items.map(a => a.kind === "o" ? a.name : (a.oblast || (RAION.get(a.key) || {}).o || a.key))).size);
   $("n-al").textContent = n.border.length ? n.border.length + " aktywne" : "brak";
   $("al-list").innerHTML = n.border.length ? n.border.map(b => `<span class="chip">${esc(b)}</span>`).join("") : '<span class="empty">Brak alarmów w obwodach graniczących z Polską (wołyński, lwowski, zakarpacki).</span>';
+  if (mode === "live" && live.alerts) {
+    if (prevBorder) { for (const b of n.border) if (!prevBorder.includes(b)) addEvent(1, "Alarm lotniczy przy granicy RP", b, "al:" + b + ":" + Math.floor(Date.now() / 60000)); for (const b of prevBorder) if (!n.border.includes(b)) addEvent(0, "Odwołano alarm przy granicy", b, "alx:" + b + ":" + Math.floor(Date.now() / 60000)) }
+    else if (n.border.length) addEvent(1, "Trwa alarm lotniczy przy granicy RP", n.border.join(", "), "alnow:" + n.border.join("|") + ":" + Math.floor(Date.now() / 1800e3));
+    prevBorder = n.border.slice()
+  }
   curBorder = n.border; evalLevel();
 }
-let curBorder = [];
+let curBorder = [], prevBorder = null;
 const refreshAlerts = () => renderAlerts(mode === "hist" ? normCompact(histAlertsAt(histTime)) : normLiveAlerts(live.alerts));
 
 /* ---------- wiadomości ---------- */
@@ -358,6 +403,32 @@ function renderTicker() {
   $("msgs").innerHTML = messages.slice(0, 12).map(m => `<div><span>${hm(m.date)} · <b>${esc(m.channel)}</b></span>${esc(String(m.text).slice(0, 400))}</div>`).join("");
   const rail = $("rail"); rail.innerHTML = items + items; rail.style.setProperty("--dur", Math.max(40, messages.slice(0, 25).reduce((a, m) => a + Math.min(180, String(m.text).length), 0) / 9) + "s")
 }
+
+/* ---------- komunikaty ---------- */
+const events = store.get("events", []).filter(e => e.t > Date.now() - 24 * 3600e3);
+const evKeys = new Set(events.map(e => e.k));
+let unread = 0;
+function addEvent(level, title, body, key, ll) {
+  if (key && evKeys.has(key)) return; if (key) evKeys.add(key);
+  const e = { t: Date.now(), l: level, title, body, k: key, ll }; events.unshift(e); if (events.length > 80) events.length = 80;
+  store.set("events", events); unread++; renderEvents(true);
+  if (level >= 1 && mode === "live") showBanner(e)
+}
+function renderEvents(fresh) {
+  $("ev-n").textContent = events.length ? events.length + " z 24 h" : "—";
+  const b = $("ev-badge"); b.hidden = !unread; b.textContent = unread;
+  if (!events.length) return;
+  $("events").innerHTML = events.slice(0, 40).map((e, i) => `<button class="ev l${e.l}${fresh && i < unread ? " new" : ""}" data-i="${i}"><i></i><b>${esc(e.title)}</b><span><time>${hm(e.t)}</time>${esc(e.body || "")}</span></button>`).join("")
+}
+$("events").addEventListener("click", ev => { const b = ev.target.closest(".ev"); if (!b) return; const e = events[+b.dataset.i]; unread = 0; renderEvents(); if (e && e.ll) { userMoved = true; map.flyTo(e.ll, Math.max(map.getZoom(), 7), { duration: .8 }) } });
+let bannerT;
+function showBanner(e) {
+  const bn = $("banner"); bn.className = "hud banner glass l" + e.l; $("banner-i").textContent = e.l >= 2 ? "!" : "⚠";
+  $("banner-t").textContent = e.title; $("banner-b").textContent = e.body || ""; bn.hidden = false; bn.style.animation = "none"; bn.offsetHeight; bn.style.animation = "";
+  bn.onclick = ev => { if (ev.target.id === "banner-x") { bn.hidden = true; return } bn.hidden = true; unread = 0; renderEvents(); if (e.ll) { userMoved = true; map.flyTo(e.ll, Math.max(map.getZoom(), 7), { duration: .8 }) } };
+  clearTimeout(bannerT); if (e.l < 2) bannerT = setTimeout(() => bn.hidden = true, 9000)
+}
+renderEvents();
 
 /* ---------- poziom zagrożenia, dźwięk, powiadomienia na ekranie ---------- */
 let soundOn = false, actx = null, lastLevel = -1; const warned = new Set();
@@ -380,6 +451,15 @@ function evalLevel() {
   $("level").dataset.l = l; $("level-t").textContent = ["niskie", "podwyższone", "wysokie"][l];
   if (mode !== "live" || !live.haveData) return;
   for (const o of act) {
+    const nm = TM(o.type).n + (o.count > 1 ? " ×" + o.count : "");
+    if (o.inPL) addEvent(2, `${nm} nad Polską`, `Okolice m. ${nearestPLCity(o.pos)}. Słuchaj komunikatów RCB.`, "in:" + o.id, o.pos);
+    else if (o.dist < thr) addEvent(o.toPL ? 2 : 1, `${nm} ${Math.round(o.dist)} km od granicy`, `${place(o)}${o.toPL ? ". Kurs w stronę Polski" : ""}.`, "near" + thr + ":" + o.id, o.pos);
+    else if (o.toPL && o.dist < thr * 2.5) addEvent(1, `${nm} leci w stronę Polski`, `${place(o)}, ${Math.round(o.dist)} km od granicy.`, "tow:" + o.id, o.pos);
+    else if (o.dist < 350) addEvent(0, `Nowy obiekt: ${nm}`, `${place(o)}, ${Math.round(o.dist)} km od granicy RP.`, "new:" + o.id, o.pos);
+  }
+  const drones = act.filter(o => o.type === "uav").reduce((a, o) => a + (o.count > 1 ? o.count : 1), 0);
+  if (drones >= 25) addEvent(1, `Zmasowany atak dronów: ${drones} w powietrzu`, "Obserwuj sytuację przy granicy i komunikaty RCB.", "mass:" + Math.floor(Date.now() / 3 / 3600e3));
+  for (const o of act) {
     const key = o.id + (o.inPL ? ":in" : ":near"); if (!(o.inPL || o.dist < thr) || warned.has(key)) continue; warned.add(key);
     notify(o.inPL ? `🚨 ${TM(o.type).n} nad Polską` : `⚠️ ${TM(o.type).n} ${Math.round(o.dist)} km od granicy`, o.inPL ? `Okolice m. ${nearestPLCity(o.pos)}.` : `${place(o)}${o.toPL ? ". Kurs w stronę Polski" : ""}.`, (o.inPL ? "in-" : "near-") + o.id)
   }
@@ -389,7 +469,7 @@ function evalLevel() {
 /* ---------- dane na żywo ---------- */
 function setLive(state, text) { $("live").className = "live " + state; $("livetxt").textContent = text }
 function stamp(src) { $("src").textContent = `Źródło: ${src} · ${new Date().toLocaleTimeString("pl-PL")}` }
-function applySnapshot(list) { live.threats.clear(); for (const t of list || []) live.threats.set(t.id, t); live.haveData = true; if (mode === "live") recompute() }
+function applySnapshot(list) { live.threats.clear(); for (const t of list || []) { live.threats.set(t.id, t); recordObs(t) } const first = !live.haveData; live.haveData = true; if (first) setTimeout(saveLocal, 3000); if (mode === "live") recompute() }
 function fetchJSON(url, ms = 12000) { const c = new AbortController(), t = setTimeout(() => c.abort(), ms); return fetch(url, { signal: c.signal, cache: "no-store" }).then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json() }).finally(() => clearTimeout(t)) }
 let source = "none", wsRetry = 0;
 function liveLabel() { if (mode === "live") setLive("on", source === "worker" ? "Na żywo · przez serwer" : "Na żywo · NEPTUN") }
@@ -401,13 +481,13 @@ function startWS() {
     ws.onmessage = e => {
       let env; try { env = JSON.parse(e.data) } catch (_) { return }
       if (env.type === "snapshot") { clearTimeout(to); applySnapshot(env.data && env.data.threats); if (env.data && env.data.alerts) { live.alerts = env.data.alerts; if (mode === "live") refreshAlerts() } if (!done) { done = true; wsRetry = 0; res(true) } }
-      else if (env.type === "upsert" && env.data && env.data.id) { live.threats.set(env.data.id, env.data); if (mode === "live") recompute() }
+      else if (env.type === "upsert" && env.data && env.data.id) { live.threats.set(env.data.id, env.data); recordObs(env.data); if (mode === "live") recompute() }
       else if (env.type === "remove" && env.data) { live.threats.delete(env.data.id); if (mode === "live") recompute() }
       else if (env.type === "alerts" && env.data) { live.alerts = env.data; if (mode === "live") refreshAlerts() }
       stamp("NEPTUN, WebSocket na żywo")
     };
     ws.onerror = fail;
-    ws.onclose = () => { if (done && source === "ws") { setLive("err", "Rozłączono, ponawiam…"); source = "none"; setTimeout(connect, Math.min(30000, 3000 * ++wsRetry)) } else fail() }
+    ws.onclose = () => { if (done && source === "ws") { setLive("err", "Rozłączono, ponawiam…"); addEvent(0, "Utracono połączenie z NEPTUN", "Ponawiam połączenie automatycznie.", "lost:" + Math.floor(Date.now() / 60000)); source = "none"; setTimeout(connect, Math.min(30000, 3000 * ++wsRetry)) } else fail() }
   })
 }
 let pollTimer = null;
@@ -427,7 +507,10 @@ async function connect() {
   source = "none"; setLive("err", "Brak połączenia, ponawiam za 30 s"); setTimeout(connect, 30000)
 }
 async function pollAlerts() { if (source === "worker") return; try { live.alerts = await fetchJSON(API + "/api/v1/alerts"); if (mode === "live") refreshAlerts() } catch (e) { } }
-async function pollMsgs() { try { const j = await fetchJSON(API + "/api/v1/messages"); messages = j.messages || []; renderTicker() } catch (e) { } }
+async function pollMsgs() {
+  try { const j = await fetchJSON(API + "/api/v1/messages"); messages = j.messages || []; renderTicker(); return } catch (e) { }
+  if (WORKER) try { const j = await fetchJSON(WORKER + "/api/messages"); if (j.messages && j.messages.length) { messages = j.messages; renderTicker() } } catch (e) { }
+}
 
 /* ---------- oś czasu ---------- */
 // migawka: [t, [[id,typ,lat,lon,kurs,liczba,flagi,miejsce], ...]]; alarmy: [t, {r:[], o:[], b:[]}]
@@ -444,16 +527,21 @@ setInterval(() => {   // zapis lokalny co minutę, gdy nie ma serwera
   if (!local.snaps.length || local.snaps[local.snaps.length - 1][0] !== t) local.snaps.push([t, c.rows]);
   const la = local.alerts[local.alerts.length - 1]; if (!la || JSON.stringify(la[1]) !== JSON.stringify(c.al)) local.alerts.push([t, c.al]);
   while (local.snaps.length && local.snaps[0][0] < Date.now() - 24 * 3600e3) local.snaps.shift();
-  if (hist.from !== "worker") useLocal(); drawTrack();
+  if (hist.from !== "worker") useLocal(); computeBars(); drawTrack(); saveLocal();
 }, 20000);
-function useLocal() { hist.snaps = local.snaps; hist.alerts = local.alerts; hist.from = "local" }
+function useLocal() { hist.snaps = local.snaps; hist.alerts = local.alerts; hist.from = "local"; buildHistIndex() }
+function saveLocal() {
+  const cut = Date.now() - 6 * 3600e3; while (local.snaps.length && local.snaps[0][0] < cut) local.snaps.shift();
+  for (let h = 6; h >= 1; h -= 2) { try { const c = Date.now() - h * 3600e3; localStorage.setItem("sn:hist", JSON.stringify({ snaps: local.snaps.filter(x => x[0] >= c), alerts: local.alerts.slice(-60) })); return } catch (e) { } }
+}
+(function loadLocal() { try { const j = JSON.parse(localStorage.getItem("sn:hist") || "null"); if (j && Array.isArray(j.snaps)) { local.snaps = j.snaps.filter(x => x[0] > Date.now() - 24 * 3600e3); local.alerts = j.alerts || [] } } catch (e) { } })();
 async function loadHistory(force) {
   if (!WORKER) { useLocal(); drawTrack(); return }
   if (!force && Date.now() - hist.loadedAt < 120000 && hist.from === "worker") return;
   try {
     const step = hist.hours > 12 ? 3 : hist.hours > 6 ? 2 : 1;
     const j = await fetchJSON(`${WORKER}/api/history?hours=${hist.hours}&step=${step}`, 30000);
-    if (j.snaps && j.snaps.length) { hist.snaps = j.snaps; hist.alerts = j.alerts || []; hist.from = "worker"; hist.loadedAt = Date.now() } else useLocal();
+    if (j.snaps && j.snaps.length > 2) { hist.snaps = j.snaps; hist.alerts = j.alerts || []; hist.from = "worker"; hist.loadedAt = Date.now(); buildHistIndex() } else useLocal();
   } catch (e) { useLocal() }
   computeBars(); drawTrack();
 }
@@ -508,15 +596,15 @@ function drawTrack() {
   if (tcv.width !== Math.round(r.width * d)) { tcv.width = Math.round(r.width * d); tcv.height = Math.round(r.height * d) }
   tcx.setTransform(d, 0, 0, d, 0, 0); tcx.clearRect(0, 0, r.width, r.height);
   const [a, b] = trange(), W = r.width, H = r.height, base = H - 12;
-  tcx.fillStyle = "rgba(255,255,255,.04)"; tcx.fillRect(0, 4, W, base - 4);
+  tcx.fillStyle = isLight() ? "rgba(10,30,60,.05)" : "rgba(255,255,255,.04)"; tcx.fillRect(0, 4, W, base - 4);
   const max = Math.max(4, ...bars.map(x => x.v)), bw = W / Math.max(1, bars.length);
   bars.forEach((x, i) => {
     if (x.al) { tcx.fillStyle = "rgba(255,59,78,.85)"; tcx.fillRect(i * bw, 4, bw, 2.5) }
     if (!x.v) return; const h = Math.max(2, (base - 10) * x.v / max);
-    tcx.fillStyle = x.near ? "rgba(255,59,78,.85)" : mode === "hist" ? "rgba(255,190,80,.55)" : "rgba(56,225,255,.5)"; tcx.fillRect(i * bw + .5, base - h, Math.max(1, bw - 1), h)
+    tcx.fillStyle = x.near ? "rgba(255,59,78,.85)" : mode === "hist" ? "rgba(255,190,80,.55)" : (isLight() ? "rgba(3,120,150,.55)" : "rgba(56,225,255,.5)"); tcx.fillRect(i * bw + .5, base - h, Math.max(1, bw - 1), h)
   });
-  if (!hist.snaps.length) { tcx.fillStyle = "#5f6f8c"; tcx.font = "500 11px 'IBM Plex Sans',sans-serif"; tcx.fillText(WORKER ? "Wczytywanie historii…" : "Historia zapisuje się od otwarcia strony (co minutę)", 8, base / 2 + 6) }
-  tcx.fillStyle = "#5f6f8c"; tcx.font = "500 9px 'JetBrains Mono',monospace";
+  if (!hist.snaps.length) { tcx.fillStyle = isLight() ? "#6b7a92" : "#5f6f8c"; tcx.font = "500 11px 'IBM Plex Sans',sans-serif"; tcx.fillText(WORKER ? "Wczytywanie historii…" : "Historia zapisuje się od otwarcia strony (co minutę)", 8, base / 2 + 6) }
+  tcx.fillStyle = isLight() ? "#6b7a92" : "#5f6f8c"; tcx.font = "500 9px 'JetBrains Mono',monospace";
   const stepH = hist.hours > 12 ? 3 : hist.hours > 6 ? 2 : 1, first = Math.ceil(a / 3600e3 / stepH) * stepH * 3600e3;
   const every = Math.max(1, Math.ceil(40 / (W / ((b - a) / (stepH * 3600e3))))); let n = 0;
   for (let t = first; t < b; t += stepH * 3600e3, n++) { const x = (t - a) / (b - a) * W; tcx.fillRect(x, base, 1, 4); if (n % every === 0) tcx.fillText(hm(t), Math.min(W - 26, x + 3), H - 1) }
@@ -635,6 +723,34 @@ function prefsChanged() {
 for (const k of PREFS) $("p-" + k).onchange = prefsChanged;
 $("i-thr").onchange = e => { thr = +e.target.value; store.set("thr", thr); recompute(); prefsChanged() };
 
+/* ---------- stan serwera ---------- */
+async function checkServer() {
+  if (!WORKER) { $("srv").textContent = "Serwer: brak (historia tylko w tej przeglądarce)"; return }
+  try {
+    const j = await fetchJSON(WORKER + "/api/status");
+    const age = j.lastSnapshot ? Math.round((Date.now() - j.lastSnapshot) / 60000) : null;
+    if (j.ok === false || (j.error && j.lastRun)) $("srv").textContent = `Serwer: błąd pobierania danych (${j.error}). Historia się nie zapisuje.`;
+    else if (age == null) $("srv").textContent = "Serwer: historia jeszcze pusta. Pierwszy zapis w ciągu minuty od wdrożenia.";
+    else if (age > 5) $("srv").textContent = `Serwer: ostatni zapis historii ${age} min temu. Zadanie co minutę nie działa.`;
+    else $("srv").textContent = `Serwer: działa, historia z ${j.snapshots || "?"} min (ostatni zapis ${age < 1 ? "przed chwilą" : age + " min temu"}).`;
+  } catch (e) { $("srv").textContent = "Serwer: brak odpowiedzi (" + (e.message || e) + ")" }
+}
+
+/* ---------- motyw ---------- */
+const SUN = '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="3.2" fill="currentColor"/><g stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M8 1v1.6M8 13.4V15M1 8h1.6M13.4 8H15M3 3l1.1 1.1M11.9 11.9 13 13M3 13l1.1-1.1M11.9 4.1 13 3"/></g></svg>',
+  MOON = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M10.8 1.6a6.6 6.6 0 1 0 3.6 10.7A5.6 5.6 0 0 1 10.8 1.6z"/></svg>',
+  AUTO = '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path fill="currentColor" d="M8 1.8a6.2 6.2 0 0 1 0 12.4z"/></svg>';
+function setTheme(t) {
+  document.documentElement.dataset.theme = t; store.set("theme", t);
+  $("theme-btn").innerHTML = t === "light" ? SUN : t === "dark" ? MOON : AUTO;
+  $("theme-btn").title = "Motyw: " + { auto: "automatyczny", light: "jasny", dark: "ciemny" }[t];
+  for (const b of $("theme-seg").querySelectorAll("button")) b.setAttribute("aria-pressed", b.dataset.t === t);
+  styleBase(); lastAlertsKey = ""; refreshAlerts(); for (const mk of markers.values()) mk._h = ""; if (live.haveData || mode === "hist") recompute(); drawTrack()
+}
+$("theme-btn").onclick = () => setTheme({ auto: "light", light: "dark", dark: "auto" }[themeSetting()]);
+$("theme-seg").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setTheme(b.dataset.t) });
+matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => { if (themeSetting() === "auto") setTheme("auto") });
+
 /* ---------- wysuwany panel na telefonie ---------- */
 const side = $("side"), grab = $("grab"), ORDER = ["peek", "half", "full"];
 function setSheet(st) { side.dataset.s = st; side.style.transform = "" }
@@ -660,6 +776,8 @@ requestAnimationFrame(() => setTimeout(() => $("stage").classList.remove("boot")
 let rsT; addEventListener("resize", () => { clearTimeout(rsT); rsT = setTimeout(() => { map.invalidateSize(); if (!userMoved) map.fitBounds(HOME(), homePad()); drawTrack() }, 200) });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && selected) select(null) });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").then(r => { swReg = r; initPush() }).catch(() => initPush()); else initPush();
+setTheme(themeSetting());
+checkServer(); setInterval(checkServer, 120000);
 connect();
 pollAlerts(); pollMsgs();
 setInterval(() => { if (!document.hidden) pollAlerts() }, 30000);

@@ -86,9 +86,11 @@ async function neptun(env, path) {
 async function tick(env) {
   await ensureSchema(env);
   const now = Date.now(), t = Math.floor(now / 60000) * 60000;
-  const [th, al] = await Promise.all([neptun(env, "/api/v1/threats"), neptun(env, "/api/v1/alerts").catch(() => null)]);
+  const [th, al, ms] = await Promise.all([neptun(env, "/api/v1/threats"), neptun(env, "/api/v1/alerts").catch(() => null), neptun(env, "/api/v1/messages").catch(() => null)]);
   const threats = th.threats || [];
   const stmts = [];
+  if (ms && Array.isArray(ms.messages)) stmts.push(env.DB.prepare("INSERT OR REPLACE INTO kv(k,v) VALUES('msgs',?)").bind(JSON.stringify({ t: now, messages: ms.messages.slice(0, 40) })));
+  stmts.push(env.DB.prepare("INSERT OR REPLACE INTO kv(k,v) VALUES('status',?)").bind(JSON.stringify({ lastRun: now, ok: true, threats: threats.length })));
 
   // migawka do osi czasu: [id, typ, lat, lon, kurs, liczba, flagi, miejsce]
   const rows = threats.filter(x => x.status !== "resolved").map(x => [x.id, x.type, +(+x.lat).toFixed(3), +(+x.lon).toFixed(3), x.heading ?? null, x.count || 0,
@@ -187,8 +189,13 @@ async function handle(req, env) {
   }
 
   if (path === "/api/status") {
-    const last = await env.DB.prepare("SELECT MAX(t) AS t FROM snaps").first();
-    return json({ ok: true, lastSnapshot: last && last.t });
+    const last = await env.DB.prepare("SELECT MAX(t) AS t, COUNT(*) AS n FROM snaps").first();
+    const st = await env.DB.prepare("SELECT v FROM kv WHERE k='status'").first();
+    return json({ ok: true, now: Date.now(), lastSnapshot: last && last.t, snapshots: last && last.n, ...(st ? JSON.parse(st.v) : {}) });
+  }
+  if (path === "/api/messages") {
+    const row = await env.DB.prepare("SELECT v FROM kv WHERE k='msgs'").first();
+    return json(row ? JSON.parse(row.v) : { t: 0, messages: [] }, 200, { "Cache-Control": "public, max-age=15" });
   }
 
   if (!path.startsWith("/api/")) return env.ASSETS ? env.ASSETS.fetch(req) : new Response("Nie znaleziono", { status: 404 });
@@ -230,5 +237,10 @@ export default {
   async fetch(req, env) {
     try { return await handle(req, env) } catch (e) { return json({ error: "Błąd serwera", detail: String(e && e.message || e) }, 500) }
   },
-  async scheduled(_ev, env, ctx) { ctx.waitUntil(tick(env)) },
+  async scheduled(_ev, env, ctx) {
+    ctx.waitUntil(tick(env).catch(async e => {
+      // zapamiętaj błąd, żeby aplikacja mogła pokazać, dlaczego historia się nie zapisuje
+      try { await ensureSchema(env); await env.DB.prepare("INSERT OR REPLACE INTO kv(k,v) VALUES('status',?)").bind(JSON.stringify({ lastRun: Date.now(), ok: false, error: String(e && e.message || e).slice(0, 300) })).run() } catch (_) { }
+    }))
+  },
 };
