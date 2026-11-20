@@ -546,7 +546,7 @@ const MCP_COPY={server_not_connected:"Przeglądarka Claude jest dostępna tylko 
 async function offerClaude(){
   const u=window.claude&&window.claude.use;mcp=u?await window.claude.use("mcp").catch(()=>null):null;
   $("connect").hidden=false;
-  if(!mcp){$("c-text").textContent="Nie udało się połączyć z NEPTUN. Sprawdź internet albo otwórz stronę w aplikacji Claude na komputerze.";$("c-go").textContent="Spróbuj ponownie";$("c-go").onclick=()=>{$("connect").hidden=true;boot()};return}
+  if(!mcp){$("c-text").textContent="Nie udało się połączyć z NEPTUN. Sprawdź połączenie z internetem i spróbuj ponownie.";$("c-go").textContent="Spróbuj ponownie";$("c-go").onclick=()=>{$("connect").hidden=true;boot()};return}
   $("c-go").onclick=connectClaude;
 }
 async function connectClaude(){
