@@ -12,6 +12,7 @@ export const FEEDS = [
   ["TVN24", "https://tvn24.pl/najnowsze.xml"],
   ["RMF24", "https://www.rmf24.pl/fakty/feed"],
   ["Polsat News", "https://www.polsatnews.pl/rss/wszystkie.xml"],
+  ["PAŻP", "https://www.pansa.pl/feed/"],
 ];
 const L = "A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż";
 const KEY = /\b(dron\w*|bezzałogow\w*|rakiet\w*|pocisk\w*|szczątk\w*|obiekt\w* (?:latając\w*|powietrzn\w*)|naruszeni\w* (?:polskiej )?przestrzeni|przestrzeń powietrzn\w*|przestrzeni powietrzn\w*|zestrzel\w*|eksplozj\w*|wybuch\w*|spadł\w*|atak\w* z powietrza|poderwan\w* myśliw\w*)\b/i;
@@ -136,10 +137,11 @@ export async function fetchNews(prev, env) {
     if (!r.ok) throw new Error(src + " HTTP " + r.status);
     return parseRss(await r.text()).map(i => ({ ...i, src }));
   }));
-  const ctx = { calls: 0 };
+  const ctx = { calls: 0 }, all = [];
   for (const res of results) {
     if (res.status !== "fulfilled") continue;
     for (const it of res.value) {
+      if (it.title && it.t > Date.now() - 72 * 3600e3) all.push(it);
       if (!it.title || !it.link || (it.t && it.t < Date.now() - 72 * 3600e3)) continue;
       if (titles.has(it.title.toLowerCase())) continue;
       const c = classify(it); if (!c) continue;
@@ -158,5 +160,5 @@ export async function fetchNews(prev, env) {
     if (hit) i.place = { ...hit, how: "same" };
   }
   const items = [...keep.values()].sort((a, b) => b.t - a.t).slice(0, 40);
-  return { v: VERSION, t: Date.now(), items, errors: results.filter(r => r.status === "rejected").map(r => String(r.reason && r.reason.message || r.reason)) };
+  return { v: VERSION, t: Date.now(), items, all, errors: results.filter(r => r.status === "rejected").map(r => String(r.reason && r.reason.message || r.reason)) };
 }

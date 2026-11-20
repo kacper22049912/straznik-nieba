@@ -7,6 +7,8 @@ import { PL } from "./pl.js";
 import { fetchRcb } from "./rcb.js";
 import { fetchNews } from "./news.js";
 import { translateMessages } from "./translate.js";
+import { aggregate, addIncidents, readStats } from "./stats.js";
+import { airportStatus } from "./airports.js";
 
 const API = "https://neptun.in.ua";
 const UA = "StraznikNieba/1.0 (+https://kacper22049912.github.io/straznik-nieba/)";
@@ -27,6 +29,8 @@ const move = (p, brg, d) => [p[0] + d * Math.cos(brg * R) / 110.57, p[1] + d * M
 function inRing(p, r) { let c = false; for (let i = 0, j = r.length - 1; i < r.length; j = i++) { const a = r[i], b = r[j]; if ((a[0] > p[0]) !== (b[0] > p[0]) && p[1] < (b[1] - a[1]) * (p[0] - a[0]) / (b[0] - a[0]) + a[1]) c = !c } return c }
 const inPL = p => p[0] > 48.9 && p[0] < 54.95 && p[1] > 14.0 && p[1] < 24.2 && PL.some(r => inRing(p, r));
 const PLPTS = PL.flat();
+const PLCOARSE = PLPTS.filter((_, i) => i % 8 === 0);
+function roughPL(p) { if (inPL(p)) return 0; let m = 1e9; for (const q of PLCOARSE) { const d = km(p, q); if (d < m) m = d } return m }
 function distPL(p) { if (inPL(p)) return 0; let m = 1e9; for (const q of PLPTS) { const d = km(p, q); if (d < m) m = d } return m }
 function towardPL(p, hdg) { if (hdg == null) return null; for (let d = 10; d <= 300; d += 10) if (inPL(move(p, hdg, d))) return d; return null }
 function nearestCity(p) { let b = CITIES[0], m = 1e9; for (const c of CITIES) { const d = km(p, [c[1], c[2]]); if (d < m) { m = d; b = c } } return b[0] }
@@ -74,6 +78,7 @@ const SCHEMA = [
   "CREATE INDEX IF NOT EXISTS inbox_sub ON inbox(sub_id)",
   "CREATE TABLE IF NOT EXISTS tr(h TEXT PRIMARY KEY, pl TEXT, t INTEGER)",
   "CREATE TABLE IF NOT EXISTS geo(q TEXT PRIMARY KEY, v TEXT, t INTEGER)",
+  "CREATE TABLE IF NOT EXISTS agg(day TEXT PRIMARY KEY, d TEXT)",
 ];
 let schemaReady = false;
 async function ensureSchema(env) { if (schemaReady) return; await env.DB.batch(SCHEMA.map(s => env.DB.prepare(s))); schemaReady = true }
@@ -113,14 +118,16 @@ async function tick(env) {
     if (!prev || prev.d !== compact) core.push(env.DB.prepare("INSERT OR REPLACE INTO alerts_log(t,d) VALUES(?,?)").bind(t, compact));
   }
   if (minute === 0) core.push(
-    env.DB.prepare("DELETE FROM snaps WHERE t < ?").bind(now - 48 * 3600e3),
+    env.DB.prepare("DELETE FROM snaps WHERE t < ?").bind(now - 7 * 864e5),
+    env.DB.prepare("DELETE FROM agg WHERE day < ?").bind(new Date(now - 90 * 864e5).toISOString().slice(0, 10)),
     env.DB.prepare("DELETE FROM alerts_log WHERE t < ? AND t <> (SELECT MAX(t) FROM alerts_log)").bind(now - 48 * 3600e3),
     env.DB.prepare("DELETE FROM sent WHERE t < ?").bind(now - 12 * 3600e3),
     env.DB.prepare("DELETE FROM inbox WHERE t < ?").bind(now - 3600e3),
     env.DB.prepare("DELETE FROM tr WHERE t < ?").bind(now - 3 * 864e5));
   await env.DB.batch(core);
 
-  // 2) dodatki; błąd jednego nie blokuje pozostałych
+  // 2) statystyki dzienne (przyrostowo) i dodatki; błąd jednego nie blokuje pozostałych
+  try { await aggregate(env, distPL, roughPL, 20) } catch (e) { console.log("AGG ERR", e && e.stack) }
   const notes = [];   // ogólne komunikaty do wysłania wszystkim: {key, pref, msg}
   if (ms && Array.isArray(ms.messages)) {
     // tłumaczymy tylko, gdy ktoś ogląda aplikację (oszczędza darmowy limit Workers AI)
@@ -142,7 +149,13 @@ async function tick(env) {
   }
   if (minute % 3 === 1) {
     try {
-      const prev = await kvGet(env, "news"), news = await fetchNews(prev, env); await kvPut(env, "news", news).run();
+      const prev = await kvGet(env, "news"), news = await fetchNews(prev, env);
+      const all = news.all || []; delete news.all;
+      await kvPut(env, "news", news).run();
+      try { await addIncidents(env, news.items) } catch (e) { }
+      const prevAp = await kvGet(env, "airports"), ap = airportStatus(prevAp, all);
+      await kvPut(env, "airports", ap).run();
+      for (const a of ap.items) if (a.state === "closed" && a.t > now - 3 * 3600e3) notes.push({ key: "ap:" + a.code + ":" + a.t, pref: "news", msg: { title: "✈️ Utrudnienia: lotnisko " + a.name, body: a.title + " (" + a.src + ")", tag: "ap-" + a.code, level: 1, ll: [a.lat, a.lon] } });
       for (const n of news.items) if (n.t > now - 3 * 3600e3 && n.impact) notes.push({ key: "news:" + n.id, pref: "news", msg: { title: "📰 " + n.title, body: `${n.src}${n.place ? " · " + n.place.name : ""}. Doniesienie mediów.`, tag: "news-" + n.id, level: 1, ll: n.place ? [n.place.lat, n.place.lon] : null } });
     } catch (e) { }
   }
@@ -208,7 +221,7 @@ async function handle(req, env) {
   }
 
   if (path === "/api/history") {
-    const hours = Math.min(24, Math.max(1, +url.searchParams.get("hours") || 6));
+    const hours = Math.min(48, Math.max(1, +url.searchParams.get("hours") || 6));
     const step = Math.min(10, Math.max(1, +url.searchParams.get("step") || 1));
     const since = Date.now() - hours * 3600e3;
     const snaps = ((await env.DB.prepare("SELECT t, d FROM snaps WHERE t >= ? ORDER BY t").bind(since).all()).results || [])
@@ -223,6 +236,8 @@ async function handle(req, env) {
     const st = await env.DB.prepare("SELECT v FROM kv WHERE k='status'").first();
     return json({ ok: true, now: Date.now(), lastSnapshot: last && last.t, snapshots: last && last.n, ...(st ? JSON.parse(st.v) : {}) });
   }
+  if (path === "/api/stats") { const days = [7, 14, 30, 90].includes(+url.searchParams.get("days")) ? +url.searchParams.get("days") : 7; return json(await readStats(env, days), 200, { "Cache-Control": "public, max-age=120" }) }
+  if (path === "/api/airports") return json((await kvGet(env, "airports")) || { t: 0, items: [] }, 200, { "Cache-Control": "public, max-age=60" });
   if (path === "/api/rcb") return json((await kvGet(env, "rcb")) || { t: 0, items: [] }, 200, { "Cache-Control": "public, max-age=30" });
   if (path === "/api/news") return json((await kvGet(env, "news")) || { t: 0, items: [] }, 200, { "Cache-Control": "public, max-age=60" });
   if (path === "/api/messages") {

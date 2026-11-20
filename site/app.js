@@ -148,7 +148,9 @@ function frame(ts) {
   drawAllTracks(); drawRoute(ts);
   for (const t of view) {
     if (t.areaOnly) continue; const col = TM(t.type).c, isSel = selected === t.id;
-    const pts = (t.trail || []).map(q => map.latLngToContainerPoint([q.lat, q.lon])); const here = map.latLngToContainerPoint(t.pos); pts.push(here);
+    const pts = (t.trail || []).map(q => map.latLngToContainerPoint([q.lat, q.lon]));
+    if (mode === "live") for (const c of crumbs.get(t.id) || []) if (c[0] > (t.trailT || 0)) pts.push(map.latLngToContainerPoint([c[1], c[2]]));
+    const here = map.latLngToContainerPoint(t.pos); pts.push(here);
     if (pts.length > 1) {
       cx.lineCap = "round"; cx.lineJoin = "round";
       for (let i = 1; i < pts.length; i++) {
@@ -224,15 +226,18 @@ function drawAllTracks() {
     cx.save(); cx.translate(e.x, e.y); cx.rotate(ang); cx.beginPath(); cx.moveTo(4, 0); cx.lineTo(-5, 4); cx.lineTo(-5, -4); cx.closePath(); cx.fillStyle = col; cx.globalAlpha = .75; cx.fill(); cx.restore(); cx.globalAlpha = 1
   }
 }
-function mergedPts(t, since) {
+const crumbs = new Map();   // ślad rysowany co sekundę z pozycji wyświetlanej: id -> [[t,lat,lon]]
+const dispPos = new Map(), anim = new Map();
+function mergedPts(t, since, withCrumbs) {
   const pts = [];
+  if (withCrumbs) for (const p of crumbs.get(t.id) || []) if (p[0] >= since) pts.push(p);
   for (const q of t.trail || []) { const tt = Date.parse(q.t); pts.push([isFinite(tt) ? tt : 0, q.lat, q.lon]) }
   for (const p of histIndex.get(t.id) || []) if (p[0] >= since) pts.push(p);
   for (const p of obs.get(t.id) || []) if (p[0] >= since) pts.push(p);
   pts.sort((a, b) => a[0] - b[0]);
   const out = []; for (const p of pts) { const l = out[out.length - 1]; if (!l || km([l[1], l[2]], [p[1], p[2]]) > .3) out.push(p) }
   // ostatni punkt to bieżąca pozycja: nie dubluj go w trasie
-  if (out.length && km([out[out.length - 1][1], out[out.length - 1][2]], [t.lat, t.lon]) < .3) out.pop();
+  if (!withCrumbs && out.length && km([out[out.length - 1][1], out[out.length - 1][2]], [t.lat, t.lon]) < .3) out.pop();
   return out
 }
 function routeFor(id) {
@@ -282,25 +287,52 @@ function fastPositions(ts) {
     const m = new Map(histThreatsAt(histTime).map(o => [o.id, o]));
     for (const o of view) { if (o.areaOnly) continue; const n = m.get(o.id); if (!n) continue; o.pos = [n.lat, n.lon]; if (n.heading != null) o.hdg = n.heading; const mk = markers.get(o.id); if (mk) mk.setLatLng(o.pos) }
   } else {
-    const now = Date.now();
-    for (const o of view) { if (o.areaOnly || !o.speed) continue; const t = live.threats.get(o.id); if (!t) continue; o.pos = deadReckon(t, now).pos; const mk = markers.get(o.id); if (mk) mk.setLatLng(o.pos) }
+    const now = Date.now(), crumb = now - lastCrumb >= 1000; if (crumb) lastCrumb = now;
+    for (const o of view) {
+      if (o.areaOnly) continue; const t = live.threats.get(o.id); if (!t) continue;
+      const target = deadReckon(t, now).pos, key = t.lat + "," + t.lon + "," + t.updatedAt;
+      let a = anim.get(o.id);
+      if (!a || a.key !== key) { const from = dispPos.get(o.id); a = { key, from: from && km(from, target) < 400 ? from : target, start: now }; anim.set(o.id, a) }
+      // nowa pozycja z NEPTUN: przejście w ~3 s zamiast skoku; potem dalej wg prędkości
+      const k = Math.min(1, (now - a.start) / 3000), e = k < 1 ? 1 - Math.pow(1 - k, 3) : 1;
+      const pos = e < 1 ? [a.from[0] + (target[0] - a.from[0]) * e, a.from[1] + (target[1] - a.from[1]) * e] : target;
+      dispPos.set(o.id, pos); o.pos = pos;
+      const mk = markers.get(o.id); if (mk) mk.setLatLng(pos);
+      if (crumb) { const c = crumbs.get(o.id) || []; const l = c[c.length - 1]; if (!l || km([l[1], l[2]], pos) > .12) { c.push([now, pos[0], pos[1]]); while (c.length > 900 || (c.length && c[0][0] < now - 90 * 60000)) c.shift(); crumbs.set(o.id, c) } }
+    }
   }
 }
+let lastCrumb = 0;
 
 /* ---------- budowa widoku ---------- */
+const MAXV = { uav: 260, recon: 220, missile: 1000, ballistic: 3000, kab: 600, mig31k: 3000, unknown: 400, fpv: 160 };
+const estCache = new Map();
+// prędkość i kurs z dwóch ostatnich prawdziwych pozycji (obserwacje, historia, trasa NEPTUN); bez śladu rysowanego co sekundę
+function estimateVel(t) {
+  const key = t.id + "|" + t.lat + "|" + t.lon + "|" + t.updatedAt; const c = estCache.get(t.id); if (c && c.key === key) return c.v;
+  const t1 = Date.parse(t.confirmedAt || t.updatedAt) || Date.now();
+  const pts = mergedPts(t, t1 - 40 * 60000).filter(p => p[0] && p[0] < t1 - 20000 && km([p[1], p[2]], [t.lat, t.lon]) > 1.5);
+  let v = null; const prev = pts[pts.length - 1];
+  if (prev) { const d = km([prev[1], prev[2]], [t.lat, t.lon]), h = (t1 - prev[0]) / 3600e3, sp = d / h;
+    if (sp >= 50 && sp <= (MAXV[t.type] || 400)) v = { speedKmh: sp, bearingDeg: bearingOf([prev[1], prev[2]], [t.lat, t.lon]), est: true } }
+  estCache.set(t.id, { key, v }); return v
+}
 function deadReckon(t, now) {
   const p = [t.lat, t.lon];
-  if (mode === "hist" || t.areaOnly || !t.velocity || !t.velocity.speedKmh) return { pos: p, hdg: t.heading ?? null, speed: t.velocity && t.velocity.speedKmh || null };
-  const t0 = Date.parse(t.confirmedAt || t.updatedAt); const h = Math.min(15, Math.max(0, (now - t0) / 60000)) / 60;
-  const b = t.velocity.bearingDeg ?? t.heading; return { pos: b == null ? p : move(p, b, t.velocity.speedKmh * h), hdg: b ?? null, speed: t.velocity.speedKmh }
+  if (mode === "hist" || t.areaOnly) return { pos: p, hdg: t.heading ?? null, speed: t.velocity && t.velocity.speedKmh || null };
+  const vel = t.velocity && t.velocity.speedKmh ? t.velocity : t.advisory ? null : estimateVel(t);
+  if (!vel) return { pos: p, hdg: t.heading ?? null, speed: null };
+  // szacunek najwyżej 8 min do przodu (podana prędkość: 15 min), potem obiekt czeka na nową pozycję
+  const t0 = Date.parse(t.confirmedAt || t.updatedAt); const h = Math.min(vel.est ? 8 : 15, Math.max(0, (now - t0) / 60000)) / 60;
+  const b = vel.bearingDeg ?? t.heading; return { pos: b == null ? p : move(p, b, vel.speedKmh * h), hdg: b ?? null, speed: vel.speedKmh, est: !!vel.est }
 }
 function sourceThreats() { return mode === "hist" ? histThreatsAt(histTime) : [...live.threats.values()] }
 function recompute() {
   const now = mode === "hist" ? histTime : Date.now(); view = [];
   for (const t of sourceThreats()) {
     if (t.status === "resolved" || t.lat == null) continue; const d = deadReckon(t, now);
-    const o = { ...t, pos: d.pos, hdg: d.hdg, speed: d.speed, type: TYPES[t.type] ? t.type : "unknown" };
-    if (mode === "live" && !t.areaOnly) o.trail = mergedPts(t, now - 90 * 60000).slice(-60).map(p => ({ lat: p[1], lon: p[2] }));
+    const o = { ...t, pos: (mode === "live" && dispPos.get(t.id)) || d.pos, hdg: d.hdg, speed: d.speed, est: d.est, type: TYPES[t.type] ? t.type : "unknown" };
+    if (mode === "live" && !t.areaOnly) { const mp = mergedPts(t, now - 90 * 60000, true).slice(-120); o.trail = mp.map(p => ({ lat: p[1], lon: p[2] })); o.trailT = mp.length ? mp[mp.length - 1][0] : 0 }
     if (!t.areaOnly) { o.dist = inPL(o.pos) ? 0 : distPL(o.pos); o.inPL = o.dist === 0; o.toPL = o.advisory ? null : towardPL(o.pos, o.hdg) } else o.dist = null;
     view.push(o)
   }
@@ -403,7 +435,7 @@ function renderDetail() {
     <div class="row" style="flex-wrap:nowrap;gap:12px">${compass(o.hdg, m.c)}<div class="kv" style="flex:1">
       <div><span>Do granicy</span><b>${o.areaOnly ? "—" : o.inPL ? "0 km" : Math.round(o.dist) + " km"}</b></div>
       <div><span>Kurs</span><b>${o.hdg == null ? "—" : Math.round(o.hdg) + "° " + dirName(o.hdg)}</b></div>
-      <div><span>Prędkość</span><b>${o.speed ? Math.round(o.speed) + " km/h" : "—"}</b></div>
+      <div><span>Prędkość${o.est ? " (szac.)" : ""}</span><b>${o.speed ? Math.round(o.speed) + " km/h" : "—"}</b></div>
       <div><span>Niepewność</span><b>${o.uncertaintyKm != null ? "±" + o.uncertaintyKm + " km" : "—"}</b></div>
       <div><span>Źródła</span><b>${o.sourceCount ?? "—"}</b></div>
       <div><span>Trasa</span><b>${(o.trail || []).length} pkt</b></div></div></div>
@@ -679,7 +711,7 @@ async function loadHistory(force) {
   if (!WORKER) { useLocal(); drawTrack(); return }
   if (!force && Date.now() - hist.loadedAt < 120000 && hist.from === "worker") return;
   try {
-    const step = hist.hours > 12 ? 3 : hist.hours > 6 ? 2 : 1;
+    const step = hist.hours > 24 ? 4 : hist.hours > 12 ? 3 : hist.hours > 6 ? 2 : 1;
     const j = await fetchJSON(`${WORKER}/api/history?hours=${hist.hours}&step=${step}`, 30000);
     if (j.snaps && j.snaps.length > 2) { hist.snaps = j.snaps; hist.alerts = j.alerts || []; hist.from = "worker"; hist.loadedAt = Date.now(); buildHistIndex() } else useLocal();
   } catch (e) { useLocal() }
@@ -745,7 +777,7 @@ function drawTrack() {
   });
   if (!hist.snaps.length) { tcx.fillStyle = isLight() ? "#6b7a92" : "#5f6f8c"; tcx.font = "500 11px 'IBM Plex Sans',sans-serif"; tcx.fillText(WORKER ? "Wczytywanie historii…" : "Historia zapisuje się od otwarcia strony (co minutę)", 8, base / 2 + 6) }
   tcx.fillStyle = isLight() ? "#6b7a92" : "#5f6f8c"; tcx.font = "500 9px 'JetBrains Mono',monospace";
-  const stepH = hist.hours > 12 ? 3 : hist.hours > 6 ? 2 : 1, first = Math.ceil(a / 3600e3 / stepH) * stepH * 3600e3;
+  const stepH = hist.hours > 24 ? 6 : hist.hours > 12 ? 3 : hist.hours > 6 ? 2 : 1, first = Math.ceil(a / 3600e3 / stepH) * stepH * 3600e3;
   const every = Math.max(1, Math.ceil(40 / (W / ((b - a) / (stepH * 3600e3))))); let n = 0;
   for (let t = first; t < b; t += stepH * 3600e3, n++) { const x = (t - a) / (b - a) * W; tcx.fillRect(x, base, 1, 4); if (n % every === 0) tcx.fillText(hm(t), Math.min(W - 26, x + 3), H - 1) }
   const cur = mode === "hist" ? histTime : b, x = (cur - a) / (b - a) * W;
@@ -891,6 +923,94 @@ $("theme-btn").onclick = () => setTheme({ auto: "light", light: "dark", dark: "a
 $("theme-seg").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setTheme(b.dataset.t) });
 matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => { if (themeSetting() === "auto") setTheme("auto") });
 
+/* ---------- statystyki 7/14/30 dni i mapa cieplna ---------- */
+let stats = null, stDays = +store.get("stDays", 7), heatOn = !!store.get("heatOn", false);
+const ST_TYPES = [["uav", "Drony uderzeniowe"], ["missile", "Pociski manewrujące"], ["ballistic", "Balistyczne"], ["kab", "Bomby KAB"], ["other", "Inne (zwiad, FPV, MiG-31K…)"]];
+const stColor = k => k === "other" ? (isLight() ? "#7b8aa3" : "#7f93b5") : TM(k).c;
+async function loadStats() {
+  if (!WORKER) { $("st-note").textContent = "Statystyki są dostępne, gdy działa serwer aplikacji."; return }
+  try { stats = await fetchJSON(`${WORKER}/api/stats?days=${stDays}`, 30000); renderStats7(); drawHeat() } catch (e) { $("st-note").textContent = "Nie udało się pobrać statystyk (" + (e.message || e) + ")." }
+}
+function renderStats7() {
+  if (!stats) return; const days = stats.days || [];
+  for (const b of $("st-range").querySelectorAll("button")) b.setAttribute("aria-pressed", +b.dataset.d === stDays);
+  const sum = k => days.reduce((a, d) => a + (k === "other" ? Object.entries(d.types).filter(([t]) => !["uav", "missile", "ballistic", "kab"].includes(t)).reduce((x, [, v]) => x + v, 0) : d.types[k] || 0), 0);
+  const best = days.filter(d => d.minD).sort((a, b) => a.minD.d - b.minD.d)[0];
+  const pl = days.flatMap(d => d.pl || []);
+  $("st-n").textContent = days.length ? `${days.length} ${days.length === 1 ? "dzień" : "dni"} z danymi` : "brak danych";
+  $("st-kpi").innerHTML = [[sum("uav"), "drony", TM("uav").c], [sum("missile"), "pociski manewr.", TM("missile").c], [sum("ballistic"), "balistyczne", TM("ballistic").c], [sum("kab"), "bomby KAB", TM("kab").c],
+    [best ? (best.minD.d < 1 ? "nad RP" : best.minD.d + " km") : "—", "najbliżej RP" + (best ? " · " + best.day.slice(8, 10) + "." + best.day.slice(5, 7) : ""), "var(--radar)"], [pl.length, "zdarzenia w Polsce", "#f26b00"]]
+    .map(([v, l, c]) => `<div class="kpi" style="--c:${c}"><b>${v}</b><span>${l}</span></div>`).join("");
+  // słupki dzienne, warstwy wg typu
+  const W = 340, H = 150, P = 22, all = [], start = new Date(Date.now() - (stDays - 1) * 864e5);
+  for (let i = 0; i < stDays; i++) { const d = new Date(start.getTime() + i * 864e5).toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }); all.push(days.find(x => x.day === d) || { day: d, types: {}, coverage: 0 }) }
+  const val = (d, k) => k === "other" ? Object.entries(d.types).filter(([t]) => !["uav", "missile", "ballistic", "kab"].includes(t)).reduce((x, [, v]) => x + v, 0) : d.types[k] || 0;
+  const max = Math.max(5, ...all.map(d => ST_TYPES.reduce((a, [k]) => a + val(d, k), 0)));
+  const bw = (W - P) / all.length;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Liczba obiektów na dobę">`;
+  for (const f of [.5, 1]) { const y = H - 16 - (H - 26) * f; svg += `<line x1="${P}" x2="${W}" y1="${y}" y2="${y}" stroke="currentColor" stroke-opacity=".12"/><text x="0" y="${y + 3}">${Math.round(max * f)}</text>` }
+  all.forEach((d, i) => {
+    let y = H - 16; const x = P + i * bw + bw * .15, w = bw * .7;
+    for (const [k] of ST_TYPES) { const v = val(d, k); if (!v) continue; const h = (H - 26) * v / max; y -= h; svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="1.5" fill="${stColor(k)}"><title>${d.day}: ${v}</title></rect>` }
+    if (d.coverage && d.coverage < .9) svg += `<text x="${x + w / 2}" y="${y - 3}" text-anchor="middle">~</text>`;
+    if (stDays <= 14 || i % 3 === 0) svg += `<text x="${x + w / 2}" y="${H - 4}" text-anchor="middle">${d.day.slice(8, 10)}.${d.day.slice(5, 7)}</text>`;
+  });
+  $("st-days").innerHTML = svg + "</svg>";
+  $("st-lg").innerHTML = ST_TYPES.map(([k, n]) => `<span><i style="background:${stColor(k)}"></i>${n}</span>`).join("");
+  // pora ataków: średnio, ile obiektów naraz w danej godzinie
+  const hrs = Array(24).fill(0), cnt = days.filter(d => d.coverage > .05).length || 1;
+  for (const d of days) if (d.coverage > .05) d.hours.forEach((v, h) => hrs[h] += v / cnt);
+  const hm2 = Math.max(1, ...hrs); let s2 = `<svg viewBox="0 0 ${W} 80" role="img" aria-label="Aktywność w ciągu doby">`;
+  hrs.forEach((v, h) => { const x = h * (W / 24), hh = 58 * v / hm2; s2 += `<rect x="${x + 1.5}" y="${62 - hh}" width="${W / 24 - 3}" height="${Math.max(1, hh)}" rx="1.5" fill="${v >= hm2 * .66 ? "#ff3b4e" : isLight() ? "#0384a3" : "#38e1ff"}" fill-opacity="${.35 + .65 * v / hm2}"><title>${h}:00 – średnio ${v.toFixed(1)} naraz</title></rect>`; if (h % 3 === 0) s2 += `<text x="${x + W / 48}" y="76" text-anchor="middle">${h}</text>` });
+  $("st-hours").innerHTML = s2 + "</svg>";
+  $("st-pl").innerHTML = pl.length ? `<div class="pld"><b>Zdarzenia w Polsce w tym okresie</b>${pl.slice(0, 12).map(x => `<a class="nw hit" style="--c:${(INC[x.kind] || INC.debris).c}" href="${esc(x.link)}" target="_blank" rel="noopener"><span class="nk">${incIcon(x.kind || "debris")}</span><b>${esc(x.title)}</b><span>${dt(x.t)}${x.place ? ` · <span class="pin">📍 ${esc(x.place)}</span>` : ""}</span></a>`).join("")}</div>` : "";
+  const partial = days.filter(d => d.coverage < .9).length;
+  $("st-note").textContent = `Statystyki liczy serwer z zapisu co minutę i przechowuje 90 dni. ${partial ? "Dni oznaczone „~” mają niepełne dane (serwer działa od 20.11). " : ""}Liczba dronów to suma największych zgłoszonych grup każdego śledzonego obiektu, więc jest przybliżona.`;
+}
+$("st-range").addEventListener("click", e => { const b = e.target.closest("button[data-d]"); if (!b) return; stDays = +b.dataset.d; store.set("stDays", stDays); loadStats() });
+// mapa cieplna: osobna warstwa canvas pod radarem, przerysowywana po przesunięciu mapy
+map.createPane("heat"); map.getPane("heat").style.zIndex = 420; map.getPane("heat").style.pointerEvents = "none";
+const hcv = document.createElement("canvas"); map.getPane("heat").appendChild(hcv); const hcx = hcv.getContext("2d");
+hcv.style.filter = "blur(5px)"; hcv.style.opacity = ".9";
+function drawHeat() {
+  const sz = map.getSize(), d = Math.min(2, devicePixelRatio || 1); hcv.width = sz.x * d; hcv.height = sz.y * d; hcv.style.width = sz.x + "px"; hcv.style.height = sz.y + "px";
+  L.DomUtil.setPosition(hcv, map.containerPointToLayerPoint([0, 0])); hcx.setTransform(d, 0, 0, d, 0, 0); hcx.clearRect(0, 0, sz.x, sz.y);
+  if (!heatOn || !stats || !stats.heat || !stats.heat.length) return;
+  const c = stats.cell || .25, max = Math.log(1 + stats.heat[0][2]);
+  for (const [a, b, v] of stats.heat) {
+    const p1 = map.latLngToContainerPoint([(a + 1) * c, b * c]), p2 = map.latLngToContainerPoint([a * c, (b + 1) * c]);
+    if (p2.x < -20 || p1.x > sz.x + 20 || p2.y < -20 || p1.y > sz.y + 20) continue;
+    const f = Math.log(1 + v) / max;
+    hcx.fillStyle = `rgba(${255},${Math.round(210 - 170 * f)},${Math.round(60 - 20 * f)},${.12 + .55 * f})`;
+    hcx.fillRect(p1.x, p1.y, p2.x - p1.x + .5, p2.y - p1.y + .5)
+  }
+}
+map.on("moveend zoomend resize", drawHeat);
+$("heat-on").checked = heatOn; $("heat-on").onchange = e => { heatOn = e.target.checked; store.set("heatOn", heatOn); if (heatOn && !stats) loadStats(); drawHeat() };
+
+/* ---------- lotniska ---------- */
+const PLANE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 10h4a2 2 0 0 1 0 4h-4l-4 7h-3l2 -7h-4l-2 2h-3l2 -4l-2 -4h3l2 2h4l-2 -7h3z"/></svg>';
+const AP_LIST = [["EPRZ", "Rzeszów-Jasionka", 50.110, 22.019], ["EPLB", "Lublin", 51.240, 22.714], ["EPWA", "Warszawa-Chopin", 52.166, 20.967], ["EPMO", "Warszawa-Modlin", 52.451, 20.652], ["EPKK", "Kraków-Balice", 50.078, 19.785], ["EPKT", "Katowice-Pyrzowice", 50.474, 19.080], ["EPGD", "Gdańsk", 54.378, 18.466], ["EPPO", "Poznań-Ławica", 52.421, 16.826], ["EPWR", "Wrocław", 51.103, 16.886], ["EPSY", "Olsztyn-Mazury", 53.482, 20.938], ["EPBY", "Bydgoszcz", 53.097, 17.978], ["EPLL", "Łódź", 51.722, 19.398], ["EPRA", "Radom", 51.389, 21.213], ["EPSC", "Szczecin-Goleniów", 53.585, 14.902]];
+const apLayer = L.layerGroup().addTo(map); let apState = { items: [] };
+function apInfo(code) { const a = (apState.items || []).find(x => x.code === code); if (!a) return { st: "quiet", txt: "Brak doniesień o utrudnieniach" }; const age = Date.now() - a.t; if (a.state === "closed" && age < 12 * 3600e3) return { st: "closed", a, txt: "Ruch wstrzymany (wg mediów)" }; if (a.state === "closed") return { st: "stale", a, txt: "Ostatnio: ruch wstrzymany" }; return { st: age < 24 * 3600e3 ? "open" : "quiet", a, txt: "Ruch przywrócony" } }
+const AP_C = { closed: "#e8213a", stale: "#d99200", open: "#16a36a", quiet: "#7b8aa3" };
+function renderAirports() {
+  apLayer.clearLayers(); const rows = [];
+  for (const [code, name, lat, lon] of AP_LIST) {
+    const i = apInfo(code), c = AP_C[i.st];
+    L.marker([lat, lon], { zIndexOffset: i.st === "closed" ? 1700 : 200, keyboard: false, icon: L.divIcon({ className: "", html: `<div class="apm ${i.st}" style="--c:${c}">${PLANE}</div>`, iconSize: [24, 24], iconAnchor: [12, 12] }) })
+      .bindTooltip(`<b>✈ ${esc(name)} (${code})</b><br>${i.txt}${i.a ? `<br><span style="color:var(--muted)">${esc(i.a.title)} · ${esc(i.a.src)}, ${dt(i.a.t)}</span>` : ""}`, { className: "tip", direction: "top", offset: [0, -10] }).addTo(apLayer);
+    if (i.a) rows.push({ code, name, i, c });
+    if (i.st === "closed") addEvent(1, "Lotnisko " + name + ": ruch wstrzymany", i.a.title + " (" + i.a.src + ")", "ap:" + code + ":" + i.a.t, [lat, lon]);
+  }
+  rows.sort((a, b) => (b.i.st === "closed") - (a.i.st === "closed") || b.i.a.t - a.i.a.t);
+  const closed = rows.filter(r => r.i.st === "closed").length;
+  $("ap-n").textContent = closed ? closed + " z utrudnieniami" : "bez utrudnień";
+  $("ap").innerHTML = (rows.length ? rows.map(r => `<a class="ap" style="--c:${r.c}" href="${esc(r.i.a.link)}" target="_blank" rel="noopener"><span class="pi">${PLANE}</span><b>${esc(r.name)}</b><span class="st">${{ closed: "wstrzymany", stale: "sprawdź", open: "działa", quiet: "działa" }[r.i.st]}</span><span>${esc(r.i.a.title)} · ${dt(r.i.a.t)}</span></a>`).join("") : "") +
+    `<span class="empty">${rows.length ? "Pozostałe lotniska" : "Wszystkie lotniska"}: brak doniesień o utrudnieniach w ostatnich dniach.</span>`;
+}
+async function pollAirports() { if (!WORKER) { renderAirports(); return } try { apState = await fetchJSON(WORKER + "/api/airports"); renderAirports() } catch (e) { } }
+
 /* ---------- zakładki panelu ---------- */
 let curTab = store.get("tab", "teraz");
 function setTab(t, save = true) {
@@ -899,7 +1019,7 @@ function setTab(t, save = true) {
   for (const sec of document.querySelectorAll(".sec[data-tab]")) sec.classList.toggle("on", sec.dataset.tab === t);
   $("side-scroll").scrollTop = 0;
   if (t === "kom") { unread = 0; renderEvents() }
-  if (t === "hist") renderFlights();
+  if (t === "hist") { renderFlights(); if (!stats) loadStats() }
 }
 $("tabs").addEventListener("click", e => { const b = e.target.closest("button[data-t]"); if (!b) return; setTab(b.dataset.t); if (mobile() && side.dataset.s === "peek") setSheet("half") });
 function tabBadges() {
@@ -938,6 +1058,8 @@ setTab(curTab, false);
 checkServer(); setInterval(checkServer, 120000);
 pollRcb(); setInterval(() => { if (!document.hidden) pollRcb() }, 60000);
 pollNews(); setInterval(() => { if (!document.hidden) pollNews() }, 120000);
+pollAirports(); setInterval(() => { if (!document.hidden) pollAirports() }, 120000);
+if (heatOn || curTab === "hist") loadStats(); setInterval(() => { if (!document.hidden && (heatOn || curTab === "hist")) loadStats() }, 10 * 60000);
 setInterval(() => { if (!document.hidden) renderFlights() }, 60000);
 connect();
 pollAlerts(); pollMsgs();
