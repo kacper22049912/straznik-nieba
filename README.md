@@ -29,7 +29,7 @@ Cloudflare buduje i wdraża workera z tego repozytorium przy każdym pushu na `m
 
 ## Pierwsza konfiguracja (jednorazowo)
 
-1. Na https://dash.cloudflare.com wejdź w **Storage & Databases → D1 → Create** i utwórz bazę o nazwie `straznik-nieba`. Jej **Database ID** wpisz w `wrangler.toml` w miejsce `__D1_ID__`.
+1. Na https://dash.cloudflare.com wejdź w **Storage & Databases → D1 → Create** i utwórz bazę o nazwie `straznik-nieba`. Jej **Database ID** jest wpisane w `wrangler.toml`.
 2. Wejdź w **Workers & Pages → Create → Import a repository**, połącz GitHuba i wybierz to repozytorium. Nazwa projektu: `straznik-nieba`. Ustawienia budowania zostaw domyślne (polecenie wdrożenia: `npx wrangler deploy`, katalog główny: `/`).
 3. Kliknij **Deploy**. Adres aplikacji pojawi się na stronie workera.
 
