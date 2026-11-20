@@ -361,7 +361,7 @@ function renderMarkers() {
   if (s && !s.areaOnly && s.uncertaintyKm) L.circle(s.pos, { radius: s.uncertaintyKm * 1000, renderer: svgR, className: "unc", color: TM(s.type).c, weight: 1.2, dashArray: "4 5", fillColor: TM(s.type).c, fillOpacity: .07, interactive: false }).addTo(selLayer);
 }
 function select(id, silent) {
-  selected = id; replay = null;
+  selected = id; replay = null; if (id && typeof setTab === "function" && curTab !== "teraz") try { setTab("teraz", false) } catch (e) { }
   route = null; if (id) { const o = view.find(x => x.id === id); if (o && !o.areaOnly) { loadHistory(); route = { id, type: o.type, pts: routeFor(id) } } }
   if (!silent) {
     const o = view.find(x => x.id === id);
@@ -482,7 +482,7 @@ function addEvent(level, title, body, key, ll) {
 }
 function renderEvents(fresh) {
   $("ev-n").textContent = events.length ? events.length + " z 24 h" : "—";
-  const b = $("ev-badge"); b.hidden = !unread; b.textContent = unread;
+  const b = $("ev-badge"); b.hidden = !unread; b.textContent = unread; if (typeof tabBadges === "function" && $("tb-kom")) try { tabBadges() } catch (e) { }
   if (!events.length) return;
   $("events").innerHTML = events.slice(0, 40).map((e, i) => `<button class="ev l${e.l}${fresh && i < unread ? " new" : ""}" data-i="${i}"><i></i><b>${esc(e.title)}</b><span><time>${hm(e.t)}</time>${esc(e.body || "")}</span></button>`).join("")
 }
@@ -598,12 +598,30 @@ function renderRcb() {
     <a href="${esc(it.url)}" target="_blank" rel="noopener">Pełna treść na gov.pl ↗</a></div>
     ${items.slice(1, 4).map(o => `<a class="nw" style="border-left-color:var(--dim)" href="${esc(o.url)}" target="_blank" rel="noopener"><b>${esc(o.title)}</b><span>${esc(o.date.split("-").reverse().join("."))}</span></a>`).join("")}`;
   if (it.date === today && cur.text) addEvent(lv, "Alert RCB" + (cur.time ? " (" + cur.time + ")" : ""), cur.text + (cur.voiv && cur.voiv.length ? " Woj.: " + cur.voiv.join(", ") + "." : ""), "rcb:" + it.id + ":" + (cur.time || "0"));
-  evalLevel()
+  evalLevel(); tabBadges()
 }
 async function pollRcb() { if (!WORKER) { renderRcb(); return } try { rcbState = await fetchJSON(WORKER + "/api/rcb"); renderRcb() } catch (e) { } }
 
 /* ---------- zdarzenia w Polsce (media) ---------- */
-let newsState = { items: [] }; const newsLayer = L.layerGroup().addTo(map);
+let newsState = { items: [] }, newsGroups = []; const newsLayer = L.layerGroup().addTo(map);
+// pinezki bliżej siebie niż ~44 px łączą się w jedną; po przybliżeniu rozdzielają się
+function drawNewsPins() {
+  newsLayer.clearLayers(); if (!newsGroups.length) return;
+  const pts = newsGroups.map(g => ({ g, p: map.latLngToLayerPoint([g.place.lat, g.place.lon]) }));
+  const clusters = [];
+  for (const it of pts) { const c = clusters.find(c => c.p.distanceTo(it.p) < 44); if (c) c.members.push(it.g); else clusters.push({ p: it.p, members: [it.g] }) }
+  for (const c of clusters) {
+    const items = c.members.flatMap(g => g.items), kind = SEV.find(s => items.some(x => x.kind === s)) || "debris", last = Math.max(...items.map(x => x.t));
+    const lat = c.members.reduce((a, g) => a + g.place.lat, 0) / c.members.length, lon = c.members.reduce((a, g) => a + g.place.lon, 0) / c.members.length;
+    const single = c.members.length === 1, g0 = c.members[0];
+    const label = single ? `${g0.name} · ${hm(last)}` : `${c.members.length} miejsca · ${hm(last)}`;
+    const mk = L.marker(single ? [g0.place.lat, g0.place.lon] : [lat, lon], { zIndexOffset: 1600, keyboard: true, title: single ? g0.name : c.members.map(g => g.name).join(", "), icon: L.divIcon({ className: "", html: pinHTML(kind, items.length, label, last > Date.now() - 6 * 3600e3, single && g0.place.approx), iconSize: [40, 52], iconAnchor: [20, 50] }) });
+    if (single) mk.bindPopup(`<div class="ipop"><b>${esc(g0.name)}${g0.place.approx ? " (miejsce przybliżone)" : ""}</b><span>${INC[kind].n} · doniesienia mediów, niepotwierdzone</span>${g0.items.slice(0, 6).map(x => `<a href="${esc(x.link)}" target="_blank" rel="noopener">${esc(x.title)}<small>${esc(x.src)} · ${dt(x.t)}</small></a>`).join("")}</div>`, { className: "tip-pop", maxWidth: 300, offset: [0, -40] });
+    else mk.on("click", () => { userMoved = true; map.flyToBounds(L.latLngBounds(c.members.map(g => [g.place.lat, g.place.lon])).pad(.6), { maxZoom: 10, duration: .8 }) });
+    mk.addTo(newsLayer)
+  }
+}
+map.on("zoomend", () => drawNewsPins());
 /* ikony zdarzeń: Tabler Icons (MIT, tabler.io/icons) */
 const INC = {
   missile: { n: "Rakieta / pocisk", c: "#e8213a", fill: false, d: '<path d="M4 13a8 8 0 0 1 7 7a6 6 0 0 0 3 -5a9 9 0 0 0 6 -8a3 3 0 0 0 -3 -3a9 9 0 0 0 -8 6a6 6 0 0 0 -5 3"/><path d="M7 14a6 6 0 0 0 -3 6a6 6 0 0 0 6 -3"/><path d="M15 9m-1 0a1 1 0 1 0 2 0a1 1 0 1 0 -2 0"/>' },
@@ -627,15 +645,9 @@ function renderNews() {
   $("news").innerHTML = items.length ? items.slice(0, 20).map(n => { const k = n.kind || "airspace", m = INC[k] || INC.airspace;
     return `<a class="nw ${n.impact ? "hit" : ""}" style="--c:${m.c}" href="${esc(n.link)}" target="_blank" rel="noopener"><span class="nk">${incIcon(k)}</span><b>${esc(n.title)}</b><span>${dt(n.t)} · ${esc(n.src)}${n.place ? ` · <span class="pin">📍 ${esc(n.place.name)}${n.place.approx ? " (przybliżone)" : ""}</span>` : ""}</span></a>` }).join("") : '<span class="empty">Brak doniesień o zdarzeniach w Polsce z ostatnich 72 godzin.</span>';
   // znaczniki: tylko upadki/wybuchy z ustalonym miejscem, zgrupowane po miejscu
-  newsLayer.clearLayers();
   const groups = new Map();
-  for (const n of hits) { if (!n.place || n.t < Date.now() - 48 * 3600e3) continue; const k = n.place.name; const g = groups.get(k) || { place: n.place, items: [] }; g.items.push(n); if (n.place.how === "village") g.place = n.place; groups.set(k, g) }
-  for (const [k, g] of groups) {
-    const kind = SEV.find(s => g.items.some(x => x.kind === s)) || "debris", last = Math.max(...g.items.map(x => x.t));
-    const pop = `<div class="ipop"><b>${esc(k)}${g.place.approx ? " (miejsce przybliżone)" : ""}</b><span>${INC[kind].n} · doniesienia mediów, niepotwierdzone</span>${g.items.slice(0, 6).map(x => `<a href="${esc(x.link)}" target="_blank" rel="noopener">${esc(x.title)}<small>${esc(x.src)} · ${dt(x.t)}</small></a>`).join("")}</div>`;
-    L.marker([g.place.lat, g.place.lon], { zIndexOffset: 1600, keyboard: true, title: k, icon: L.divIcon({ className: "", html: pinHTML(kind, g.items.length, `${k} · ${hm(last)}`, last > Date.now() - 6 * 3600e3, g.place.approx), iconSize: [40, 52], iconAnchor: [20, 50] }) })
-      .bindPopup(pop, { className: "tip-pop", maxWidth: 300, offset: [0, -40] }).addTo(newsLayer);
-  }
+  for (const n of hits) { if (!n.place || n.t < Date.now() - 48 * 3600e3) continue; const k = n.place.name; const g = groups.get(k) || { name: k, place: n.place, items: [] }; g.items.push(n); if (n.place.how === "village") g.place = n.place; groups.set(k, g) }
+  newsGroups = [...groups.values()]; drawNewsPins(); tabBadges();
   for (const n of hits) if (n.t > Date.now() - 6 * 3600e3) addEvent(n.t > Date.now() - 30 * 60000 ? 1 : 0, (INC[n.kind] || INC.debris).n + ": " + n.title, n.src + (n.place ? " · " + n.place.name : "") + ". Informacja mediów, niepotwierdzona.", "news:" + n.id, n.place ? [n.place.lat, n.place.lon] : null);
 }
 async function pollNews() { if (!WORKER) { renderNews(); return } try { newsState = await fetchJSON(WORKER + "/api/news"); renderNews() } catch (e) { } }
@@ -879,6 +891,23 @@ $("theme-btn").onclick = () => setTheme({ auto: "light", light: "dark", dark: "a
 $("theme-seg").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setTheme(b.dataset.t) });
 matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => { if (themeSetting() === "auto") setTheme("auto") });
 
+/* ---------- zakładki panelu ---------- */
+let curTab = store.get("tab", "teraz");
+function setTab(t, save = true) {
+  curTab = t; if (save) store.set("tab", t);
+  for (const b of document.querySelectorAll("#tabs button")) b.setAttribute("aria-selected", b.dataset.t === t);
+  for (const sec of document.querySelectorAll(".sec[data-tab]")) sec.classList.toggle("on", sec.dataset.tab === t);
+  $("side-scroll").scrollTop = 0;
+  if (t === "kom") { unread = 0; renderEvents() }
+  if (t === "hist") renderFlights();
+}
+$("tabs").addEventListener("click", e => { const b = e.target.closest("button[data-t]"); if (!b) return; setTab(b.dataset.t); if (mobile() && side.dataset.s === "peek") setSheet("half") });
+function tabBadges() {
+  const k = $("tb-kom"); k.hidden = !unread; k.textContent = unread > 99 ? "99+" : unread;
+  const hot = rcbActive || (newsState.items || []).some(n => n.impact && n.t > Date.now() - 6 * 3600e3);
+  $("tb-pl").hidden = !hot;
+}
+
 /* ---------- wysuwany panel na telefonie ---------- */
 const side = $("side"), grab = $("grab"), ORDER = ["peek", "half", "full"];
 function setSheet(st) { side.dataset.s = st; side.style.transform = "" }
@@ -905,6 +934,7 @@ let rsT; addEventListener("resize", () => { clearTimeout(rsT); rsT = setTimeout(
 document.addEventListener("keydown", e => { if (e.key === "Escape" && selected) select(null) });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").then(r => { swReg = r; initPush() }).catch(() => initPush()); else initPush();
 setTheme(themeSetting());
+setTab(curTab, false);
 checkServer(); setInterval(checkServer, 120000);
 pollRcb(); setInterval(() => { if (!document.hidden) pollRcb() }, 60000);
 pollNews(); setInterval(() => { if (!document.hidden) pollNews() }, 120000);
