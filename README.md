@@ -35,6 +35,14 @@ Cloudflare buduje i wdraża workera z tego repozytorium przy każdym pushu na `m
 
 Lokalnie: `npm install`, potem `npm run dev`.
 
+## Źródła danych i ikon
+
+- Zagrożenia, alarmy i wiadomości z kanałów: [NEPTUN](https://neptun.in.ua/)
+- Alerty RCB: [gov.pl/web/rcb](https://www.gov.pl/web/rcb)
+- Doniesienia o zdarzeniach w Polsce: kanały RSS TVN24, RMF24, Polsat News
+- Położenie wsi: [OpenStreetMap](https://www.openstreetmap.org/copyright) (Nominatim), miasta: [GeoNames](https://www.geonames.org/) (CC BY 4.0)
+- Granice: Natural Earth; ikony zdarzeń: [Tabler Icons](https://tabler.io/icons) (MIT)
+
 ## Ważne
 
 To nie jest oficjalny system ostrzegania. Pozycje są przybliżone i mogą być opóźnione. W Polsce kieruj się komunikatami RCB (Alert RCB) i Dowództwa Operacyjnego RSZ.

@@ -73,6 +73,7 @@ const SCHEMA = [
   "CREATE TABLE IF NOT EXISTS alerts_log(t INTEGER PRIMARY KEY, d TEXT)",
   "CREATE INDEX IF NOT EXISTS inbox_sub ON inbox(sub_id)",
   "CREATE TABLE IF NOT EXISTS tr(h TEXT PRIMARY KEY, pl TEXT, t INTEGER)",
+  "CREATE TABLE IF NOT EXISTS geo(q TEXT PRIMARY KEY, v TEXT, t INTEGER)",
 ];
 let schemaReady = false;
 async function ensureSchema(env) { if (schemaReady) return; await env.DB.batch(SCHEMA.map(s => env.DB.prepare(s))); schemaReady = true }
@@ -141,8 +142,8 @@ async function tick(env) {
   }
   if (minute % 3 === 1) {
     try {
-      const prev = await kvGet(env, "news"), news = await fetchNews(prev); await kvPut(env, "news", news).run();
-      for (const n of news.items) if (n.t > now - 3 * 3600e3) notes.push({ key: "news:" + n.id, pref: "news", msg: { title: "📰 " + n.title, body: `${n.src}${n.place ? " · " + n.place.name : ""}. Doniesienie mediów.`, tag: "news-" + n.id, level: 1, ll: n.place ? [n.place.lat, n.place.lon] : null } });
+      const prev = await kvGet(env, "news"), news = await fetchNews(prev, env); await kvPut(env, "news", news).run();
+      for (const n of news.items) if (n.t > now - 3 * 3600e3 && n.impact) notes.push({ key: "news:" + n.id, pref: "news", msg: { title: "📰 " + n.title, body: `${n.src}${n.place ? " · " + n.place.name : ""}. Doniesienie mediów.`, tag: "news-" + n.id, level: 1, ll: n.place ? [n.place.lat, n.place.lon] : null } });
     } catch (e) { }
   }
 
