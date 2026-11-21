@@ -50,3 +50,16 @@ export async function shelters(lat, lon) {
   out.sort((a, b) => (a.d + RANK[a.k] * .25) - (b.d + RANK[b.k] * .25));
   return { t: Date.now(), r: R, items: out.slice(0, 40) };
 }
+
+export async function overpassDebug() {
+  const out = {};
+  for (const ep of EPS) {
+    const t0 = Date.now();
+    try { const r = await fetch(ep.replace("interpreter", "status"), { signal: AbortSignal.timeout(8000), headers: { "User-Agent": "StraznikNieba/1.0" } }); out[ep] = r.status + " " + (await r.text()).slice(0, 200) + " " + (Date.now() - t0) + "ms" }
+    catch (e) { out[ep] = "ERR " + (e.name || "") + " " + (e.message || e) + " " + (Date.now() - t0) + "ms" }
+    const t1 = Date.now();
+    try { const r = await fetch(ep + "?data=" + encodeURIComponent("[out:json][timeout:5];node(52.229,21.01,52.231,21.012);out 1;"), { signal: AbortSignal.timeout(8000), headers: { "User-Agent": "StraznikNieba/1.0" } }); out[ep + " GET"] = r.status + " " + (await r.text()).slice(0, 120) + " " + (Date.now() - t1) + "ms" }
+    catch (e) { out[ep + " GET"] = "ERR " + (e.name || "") + " " + (e.message || e) + " " + (Date.now() - t1) + "ms" }
+  }
+  return out;
+}
