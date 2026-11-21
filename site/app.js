@@ -1284,6 +1284,42 @@ const PI = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-wi
 const TI = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20v-8a9 9 0 0 1 18 0v8"/><path d="M8 20v-6a4 4 0 0 1 8 0v6"/></svg>';
 const SHK = { schron: { n: "Schron", c: "#3be39b", i: SHI }, bunkier: { n: "Budowla ochronna / bunkier", c: "#2ec4b6", i: SHI }, metro: { n: "Stacja metra", c: "#38a8ff", i: MI }, "przejście": { n: "Przejście podziemne", c: "#b77bff", i: TI }, parking: { n: "Parking podziemny", c: "#ffb020", i: PI }, inne: { n: "Miejsce schronienia", c: "#9db4d9", i: SHI } };
 let shState = null; const shLayer = L.layerGroup().addTo(map), shMk = [];
+// zapytanie wysyłane prosto z przeglądarki do Overpass (OpenStreetMap); serwer aplikacji jest zapasem
+const OVP = ["https://overpass-api.de/api/interpreter", "https://overpass.private.coffee/api/interpreter", "https://maps.mail.ru/osm/tools/overpass/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
+function ovpQuery(lat, lon) {
+  const a = `(around:3000,${lat.toFixed(4)},${lon.toFixed(4)})`;
+  return `[out:json][timeout:20];(nwr${a}["amenity"="shelter"]["shelter_type"~"bomb|air_raid|civil|underground",i];nwr${a}["air_raid_shelter"="yes"];nwr${a}["emergency"~"^(shelter|air_raid_shelter)$"];nwr${a}["building"="bunker"][!"historic"][!"ruins"][!"disused"];nwr${a}["railway"="station"]["station"="subway"];nwr${a}["amenity"="parking"]["parking"="underground"];way${a}["highway"~"footway|pedestrian"]["tunnel"="yes"]["layer"~"^-"];);out center tags 400;`
+}
+function shKind(t) {
+  if (/bomb|air_raid|civil/i.test(t.shelter_type || "") || t.air_raid_shelter === "yes" || /shelter/.test(t.emergency || "")) return "schron";
+  if (t.building === "bunker") return "bunkier"; if (t.station === "subway") return "metro"; if (t.parking === "underground") return "parking"; if (t.tunnel === "yes") return "przejście"; return "inne"
+}
+const SHRANK = { schron: 0, bunkier: 1, metro: 2, "przejście": 3, parking: 4, inne: 5 };
+async function sheltersDirect(lat, lon) {
+  const q = ovpQuery(lat, lon); let last = "";
+  for (const ep of OVP) {
+    const c = new AbortController(), tm = setTimeout(() => c.abort(), 25000);
+    try {
+      const r = await fetch(ep, { method: "POST", body: "data=" + encodeURIComponent(q), headers: { "Content-Type": "application/x-www-form-urlencoded" }, signal: c.signal });
+      if (!r.ok) throw new Error("HTTP " + r.status); const d = await r.json(); clearTimeout(tm);
+      const seen = new Set(), items = [];
+      for (const e of d.elements || []) {
+        const la = e.lat ?? (e.center && e.center.lat), lo = e.lon ?? (e.center && e.center.lon); if (la == null) continue;
+        const t = e.tags || {}, k = shKind(t); if (t.access === "private" || t.access === "no") continue;
+        const name = t.name || t["name:pl"] || t.operator || "", key = k + ":" + (name || la.toFixed(4) + lo.toFixed(4)); if (k === "metro" && seen.has(key)) continue; seen.add(key);
+        items.push({ k, name, lat: la, lon: lo, d: km([lat, lon], [la, lo]), cap: +t.capacity || null, osm: e.type + "/" + e.id })
+      }
+      items.sort((a, b) => (a.d + SHRANK[a.k] * .25) - (b.d + SHRANK[b.k] * .25));
+      return { t: Date.now(), r: 3000, items: items.slice(0, 40) }
+    } catch (e) { clearTimeout(tm); last = e.name === "AbortError" ? "serwer nie odpowiada" : String(e.message || e) }
+  }
+  throw new Error(last || "OpenStreetMap niedostępny")
+}
+async function sheltersAt(lat, lon) {
+  const ck = "sh:" + lat.toFixed(2) + "," + lon.toFixed(2), c = store.get(ck, null); if (c && Date.now() - c.t < 864e5) return c;
+  let d; try { d = await sheltersDirect(lat, lon) } catch (e) { if (!WORKER) throw e; d = await fetchJSON(`${WORKER}/api/shelters?lat=${lat.toFixed(3)}&lon=${lon.toFixed(3)}`, 45000); if (d.error) throw e }
+  if ((d.items || []).length) store.set(ck, d); return d
+}
 const walk = d => Math.max(1, Math.round(d / 4.8 * 60));
 const fmtD = d => d < 1 ? Math.round(d * 1000 / 10) * 10 + " m" : d.toFixed(1).replace(".", ",") + " km";
 function shPopup(x) {
@@ -1302,13 +1338,12 @@ function renderShelters() {
 async function findShelters(useMe) {
   const go = at => {
     $("sh-list").innerHTML = '<span class="empty">Szukam miejsc schronienia…</span>';
-    fetchJSON(`${WORKER}/api/shelters?lat=${at[0].toFixed(3)}&lon=${at[1].toFixed(3)}`, 30000).then(d => {
-      if (d.error) throw new Error(d.error);
+    $("sh-list").innerHTML = '<span class="empty">Szukam miejsc schronienia w OpenStreetMap… (może potrwać do pół minuty)</span>';
+    sheltersAt(at[0], at[1]).then(d => {
       shState = { ...d, at }; renderShelters(); userMoved = true; if (mobile()) setSheet("peek");
       const b = L.latLngBounds([at, ...(d.items || []).slice(0, 6).map(x => [x.lat, x.lon])]); map.flyToBounds(b.pad(.3), { maxZoom: 15, duration: .8 })
     }).catch(e => { $("sh-list").innerHTML = `<span class="empty">Nie udało się pobrać miejsc schronienia (${esc(e.message || e)}). Skorzystaj z oficjalnej mapy PSP poniżej.</span>` })
   };
-  if (!WORKER) { $("sh-list").innerHTML = '<span class="empty">Dostępne, gdy działa serwer aplikacji.</span>'; return }
   if (!useMe) { const c = map.getCenter(); return go([c.lat, c.lng]) }
   if (!navigator.geolocation) return go(me ? [me.lat, me.lon] : [map.getCenter().lat, map.getCenter().lng]);
   $("sh-list").innerHTML = '<span class="empty">Ustalanie lokalizacji…</span>';
