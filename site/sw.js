@@ -4,7 +4,7 @@
    - pamięć podręczna pozwala otworzyć aplikację bez sieci (dane i tak wymagają internetu). */
 importScripts("config.js");
 const WORKER = ((self.SN_CONFIG || {}).worker || "").replace(/\/+$/, "");
-const CACHE = "sn-v12";
+const CACHE = "sn-v13";
 const SHELL = ["./", "index.html", "app.js", "geo.js", "ua.js", "leaflet.css", "config.js", "manifest.webmanifest", "icons/icon-192.png", "icons/badge.png"];
 
 self.addEventListener("install", e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).catch(() => {})); self.skipWaiting() });

@@ -60,9 +60,15 @@ $("legend-rows").innerHTML = Object.entries(TYPES).map(([k, m]) => `<div><span s
 setTimeout(() => { $("legend-rows").innerHTML += ["missile", "drone", "explosion", "debris"].map(k => `<div><span style="color:${INC[k].c}">${incIcon(k)}</span>W Polsce: ${INC[k].n.toLowerCase()}</div>`).join("") + `<div><span style="color:#4f9dff">${JET}</span>Samolot wojskowy (ADS-B)</div>` }, 0);
 
 /* ---------- mapa ---------- */
-const map = L.map("map", { zoomSnap: .25, minZoom: 4, maxZoom: 11, zoomControl: false, attributionControl: false, preferCanvas: true, maxBounds: [[40, 5], [63, 47]] });
+const map = L.map("map", { zoomSnap: .25, minZoom: 4, maxZoom: 17, zoomControl: false, attributionControl: false, preferCanvas: true, maxBounds: [[40, 5], [63, 47]] });
 L.control.zoom({ position: "bottomright" }).addTo(map);
 L.control.scale({ imperial: false, position: "bottomright" }).addTo(map);
+// ulice pokazywane dopiero po przybliżeniu (np. przy szukaniu schronów)
+const streetUrl = () => `https://{s}.basemaps.cartocdn.com/${document.documentElement.dataset.theme === "light" || (document.documentElement.dataset.theme !== "dark" && matchMedia("(prefers-color-scheme: light)").matches) ? "light_all" : "dark_all"}/{z}/{x}/{y}{r}.png`;
+const streets = L.tileLayer(streetUrl(), { subdomains: "abcd", maxZoom: 19, opacity: .9, attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> © <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>' });
+const attrib = L.control.attribution({ prefix: false, position: "bottomleft" });
+function updStreets() { const on = map.getZoom() >= 9.5; if (on && !map.hasLayer(streets)) { streets.setUrl(streetUrl()); streets.addTo(map); attrib.addTo(map) } else if (!on && map.hasLayer(streets)) { map.removeLayer(streets); attrib.remove() } }
+map.on("zoomend", updStreets);
 const svgR = L.svg({ padding: .3 });
 const HOME = () => mobile() ? [[48.4, 14.1], [54.9, 30.8]] : [[45.6, 13.8], [55.2, 38.5]];
 const cssPx = n => parseFloat(getComputedStyle(document.documentElement).getPropertyValue(n)) || 0;
@@ -1047,7 +1053,7 @@ function setTheme(t) {
   $("theme-btn").innerHTML = t === "light" ? SUN : t === "dark" ? MOON : AUTO;
   $("theme-btn").title = "Motyw: " + { auto: "automatyczny", light: "jasny", dark: "ciemny" }[t];
   for (const b of $("theme-seg").querySelectorAll("button")) b.setAttribute("aria-pressed", b.dataset.t === t);
-  styleBase(); lastAlertsKey = ""; refreshAlerts(); for (const mk of markers.values()) mk._h = ""; if (live.haveData || mode === "hist") recompute(); drawTrack()
+  styleBase(); if (map.hasLayer(streets)) streets.setUrl(streetUrl()); lastAlertsKey = ""; refreshAlerts(); for (const mk of markers.values()) mk._h = ""; if (live.haveData || mode === "hist") recompute(); drawTrack()
 }
 $("theme-btn").onclick = () => setTheme({ auto: "light", light: "dark", dark: "auto" }[themeSetting()]);
 $("theme-seg").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setTheme(b.dataset.t) });
@@ -1174,7 +1180,8 @@ function renderMe() {
   const act = view.filter(o => !o.areaOnly && !o.advisory && o.pos).map(o => ({ o, d: km([me.lat, me.lon], o.pos) })).sort((a, b) => a.d - b.d), n = act[0];
   setStat("s-me", n ? Math.round(n.d) + " km" : "—");
   box.innerHTML = n ? `Najbliżej Ciebie: <b>${esc(TM(n.o.type).n)}</b>, <b>${Math.round(n.d)} km</b> (${esc(place(n.o))}).` : "Brak obiektów w powietrzu.";
-  if (n && n.d < meRadius && mode === "live") addEvent(n.d < meRadius / 2 ? 2 : 1, `${TM(n.o.type).n} ${Math.round(n.d)} km od Ciebie`, place(n.o) + ".", "me:" + n.o.id + ":" + (n.d < meRadius / 2 ? 2 : 1), n.o.pos, `<svg viewBox="0 0 24 24">${SVG[n.o.type] || SVG.unknown}</svg>`);
+  const sh = shState && (shState.items || [])[0], shTxt = sh ? ` Najbliższe schronienie: ${sh.name || (SHK[sh.k] || SHK.inne).n}, ${fmtD(sh.d)}.` : " Sprawdź zakładkę Schrony.";
+  if (n && n.d < meRadius && mode === "live") addEvent(n.d < meRadius / 2 ? 2 : 1, `${TM(n.o.type).n} ${Math.round(n.d)} km od Ciebie`, place(n.o) + "." + shTxt, "me:" + n.o.id + ":" + (n.d < meRadius / 2 ? 2 : 1), n.o.pos, `<svg viewBox="0 0 24 24">${SVG[n.o.type] || SVG.unknown}</svg>`);
 }
 $("me-btn").onclick = () => {
   if (me) { me = null; store.set("me", null); renderMe(); return }
@@ -1242,17 +1249,18 @@ function setTab(t, save = true) {
   $("side-scroll").scrollTop = 0;
   if (t === "kom") { unread = 0; renderEvents() }
   if (t === "hist") { renderFlights(); if (!stats) loadStats() }
+  if (typeof syncNav === "function") syncNav()
 }
 $("tabs").addEventListener("click", e => { const b = e.target.closest("button[data-t]"); if (!b) return; setTab(b.dataset.t); if (mobile() && side.dataset.s === "peek") setSheet("half") });
 function tabBadges() {
   const k = $("tb-kom"); k.hidden = !unread; k.textContent = unread > 99 ? "99+" : unread;
   const hot = rcbActive || (newsState.items || []).some(n => n.impact && n.t > Date.now() - 6 * 3600e3);
-  $("tb-pl").hidden = !hot;
+  $("tb-pl").hidden = !hot; if ($("bn-pl")) { $("bn-pl").hidden = !hot; const c = $("bn-kom"); c.hidden = !unread; c.textContent = unread > 99 ? "99+" : unread }
 }
 
 /* ---------- wysuwany panel na telefonie ---------- */
 const side = $("side"), grab = $("grab"), ORDER = ["peek", "half", "full"];
-function setSheet(st) { side.dataset.s = st; side.style.transform = "" }
+function setSheet(st) { side.dataset.s = st; side.style.transform = ""; if (typeof syncNav === "function" && $("bnav")) syncNav() }
 let drag = null;
 grab.addEventListener("pointerdown", e => { if (!mobile()) return; const r = side.getBoundingClientRect(); drag = { y0: e.clientY, off0: r.top - (innerHeight - r.height), moved: false }; side.classList.add("drag"); grab.setPointerCapture(e.pointerId) });
 grab.addEventListener("pointermove", e => {
@@ -1268,6 +1276,94 @@ const endDrag = e => {
 };
 grab.addEventListener("pointerup", endDrag); grab.addEventListener("pointercancel", endDrag);
 grab.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSheet(ORDER[(ORDER.indexOf(side.dataset.s) + 1) % 3]) } });
+
+/* ---------- schrony i miejsca schronienia ---------- */
+const SHI = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a12 12 0 0 0 8.5 3a12 12 0 0 1 -8.5 15a12 12 0 0 1 -8.5 -15a12 12 0 0 0 8.5 -3"/></svg>';
+const MI = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20v-14l8 8l8 -8v14"/></svg>';
+const PI = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 20v-16h4.5a4 4 0 0 1 0 8h-4.5"/></svg>';
+const TI = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20v-8a9 9 0 0 1 18 0v8"/><path d="M8 20v-6a4 4 0 0 1 8 0v6"/></svg>';
+const SHK = { schron: { n: "Schron", c: "#3be39b", i: SHI }, bunkier: { n: "Budowla ochronna / bunkier", c: "#2ec4b6", i: SHI }, metro: { n: "Stacja metra", c: "#38a8ff", i: MI }, "przejście": { n: "Przejście podziemne", c: "#b77bff", i: TI }, parking: { n: "Parking podziemny", c: "#ffb020", i: PI }, inne: { n: "Miejsce schronienia", c: "#9db4d9", i: SHI } };
+let shState = null; const shLayer = L.layerGroup().addTo(map), shMk = [];
+const walk = d => Math.max(1, Math.round(d / 4.8 * 60));
+const fmtD = d => d < 1 ? Math.round(d * 1000 / 10) * 10 + " m" : d.toFixed(1).replace(".", ",") + " km";
+function shPopup(x) {
+  const k = SHK[x.k] || SHK.inne;
+  return `<div class="shp"><b style="color:${k.c}">${esc(x.name || k.n)}</b><br>${k.n}${x.cap ? " · " + x.cap + " miejsc" : ""}<br>${fmtD(x.d)} · ok. ${walk(x.d)} min pieszo<br><a href="https://www.google.com/maps/dir/?api=1&destination=${x.lat},${x.lon}&travelmode=walking" target="_blank" rel="noopener">🧭 Prowadź pieszo</a> · <a href="https://www.openstreetmap.org/${x.osm}" target="_blank" rel="noopener">OSM</a></div>`
+}
+function renderShelters() {
+  shLayer.clearLayers(); shMk.length = 0;
+  if (!shState) return; const items = shState.items || [];
+  $("sh-n").textContent = items.length ? items.length + " w pobliżu" : "brak";
+  L.circle(shState.at, { radius: 3000, color: "#3be39b", weight: 1, dashArray: "3 6", fill: false, interactive: false }).addTo(shLayer);
+  for (const x of items) { const k = SHK[x.k] || SHK.inne; shMk.push(L.marker([x.lat, x.lon], { keyboard: false, zIndexOffset: 500, icon: L.divIcon({ className: "", html: `<div class="shmk" style="--sc:${k.c}">${k.i}</div>`, iconSize: [26, 26], iconAnchor: [13, 26], popupAnchor: [0, -24] }) }).bindPopup(shPopup(x), { className: "tip-pop" }).addTo(shLayer)) }
+  $("sh-list").innerHTML = items.length ? items.slice(0, 25).map((x, i) => { const k = SHK[x.k] || SHK.inne; return `<button class="sh" data-i="${i}" style="--sc:${k.c}"><span class="si">${k.i}</span><b>${esc(x.name || k.n)}</b><span class="d">${fmtD(x.d)}</span><span>${k.n} · ${walk(x.d)} min pieszo</span></button>` }).join("")
+    : '<span class="empty">W promieniu 3 km nie ma miejsc oznaczonych w OpenStreetMap. Szukaj piwnicy w swoim budynku albo sprawdź oficjalną mapę PSP poniżej.</span>';
+}
+async function findShelters(useMe) {
+  const go = at => {
+    $("sh-list").innerHTML = '<span class="empty">Szukam miejsc schronienia…</span>';
+    fetchJSON(`${WORKER}/api/shelters?lat=${at[0].toFixed(3)}&lon=${at[1].toFixed(3)}`, 30000).then(d => {
+      if (d.error) throw new Error(d.error);
+      shState = { ...d, at }; renderShelters(); userMoved = true; if (mobile()) setSheet("peek");
+      const b = L.latLngBounds([at, ...(d.items || []).slice(0, 6).map(x => [x.lat, x.lon])]); map.flyToBounds(b.pad(.3), { maxZoom: 15, duration: .8 })
+    }).catch(e => { $("sh-list").innerHTML = `<span class="empty">Nie udało się pobrać miejsc schronienia (${esc(e.message || e)}). Skorzystaj z oficjalnej mapy PSP poniżej.</span>` })
+  };
+  if (!WORKER) { $("sh-list").innerHTML = '<span class="empty">Dostępne, gdy działa serwer aplikacji.</span>'; return }
+  if (!useMe) { const c = map.getCenter(); return go([c.lat, c.lng]) }
+  if (!navigator.geolocation) return go(me ? [me.lat, me.lon] : [map.getCenter().lat, map.getCenter().lng]);
+  $("sh-list").innerHTML = '<span class="empty">Ustalanie lokalizacji…</span>';
+  navigator.geolocation.getCurrentPosition(p => go([p.coords.latitude, p.coords.longitude]), e => { $("sh-list").innerHTML = `<span class="empty">${e.code === 1 ? "Nie zezwolono na lokalizację. Użyj „Szukaj w środku mapy”." : "Nie udało się ustalić lokalizacji."}</span>` }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 120000 })
+}
+$("sh-me").onclick = () => findShelters(true); $("sh-map").onclick = () => findShelters(false);
+$("sh-list").addEventListener("click", e => { const b = e.target.closest(".sh"); if (!b) return; const mk = shMk[+b.dataset.i]; if (!mk) return; userMoved = true; if (mobile()) setSheet("peek"); map.flyTo(mk.getLatLng(), 16, { duration: .7 }); setTimeout(() => mk.openPopup(), 750) });
+
+// sygnały alarmowe (próbka kilku sekund)
+let sigStop = null;
+function playSignal(kind, btn) {
+  if (sigStop) { const same = btn.classList.contains("play"); sigStop(); if (same) return }
+  try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); actx.resume() } catch (e) { return }
+  const t0 = actx.currentTime + .05, dur = 8, o = actx.createOscillator(), g = actx.createGain();
+  o.type = "sawtooth"; const f = actx.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = 1800;
+  if (kind === "alarm") { for (let t = 0; t < dur; t += 2.4) { o.frequency.setValueAtTime(380, t0 + t); o.frequency.linearRampToValueAtTime(820, t0 + t + 1.2); o.frequency.linearRampToValueAtTime(380, t0 + t + 2.4) } }
+  else o.frequency.setValueAtTime(600, t0);
+  g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(.12, t0 + .6); g.gain.setValueAtTime(.12, t0 + dur - .8); g.gain.linearRampToValueAtTime(0, t0 + dur);
+  o.connect(f).connect(g).connect(actx.destination); o.start(t0); o.stop(t0 + dur);
+  btn.classList.add("play"); btn.querySelector("i").textContent = "■ zatrzymaj";
+  const end = () => { try { o.stop() } catch (e) { } btn.classList.remove("play"); btn.querySelector("i").textContent = "▶ posłuchaj"; sigStop = null };
+  o.onended = end; sigStop = end;
+}
+for (const b of document.querySelectorAll("[data-sig]")) b.onclick = () => playSignal(b.dataset.sig, b);
+
+// plecak ewakuacyjny
+const BAG = ["Woda (min. 3 l na osobę)", "Jedzenie na 3 dni", "Latarka i zapasowe baterie", "Powerbank i ładowarka", "Radio na baterie lub korbkę", "Apteczka i leki", "Kopie dokumentów i gotówka", "Ciepłe ubranie, koc termiczny", "Gwizdek, scyzoryk, taśma", "Środki higieny, maseczki"];
+let bag = store.get("bag", {});
+function renderBag() {
+  $("bag").innerHTML = BAG.map((t, i) => `<label><input type="checkbox" data-b="${i}"${bag[i] ? " checked" : ""}> ${t}</label>`).join("");
+  const n = BAG.filter((_, i) => bag[i]).length; $("bag-n").textContent = n + "/" + BAG.length; $("bag-bar").style.width = (n / BAG.length * 100) + "%";
+}
+$("bag").addEventListener("change", e => { const i = e.target.dataset.b; if (i == null) return; bag[i] = e.target.checked; store.set("bag", bag); renderBag() });
+renderBag();
+
+/* ---------- dolne menu na telefonie ---------- */
+function syncNav() {
+  const cur = side.dataset.s === "peek" ? "map" : ["kom", "hist", "ust"].includes(curTab) ? "more" : curTab;
+  for (const b of document.querySelectorAll("#bnav button")) b.setAttribute("aria-current", b.dataset.go === cur)
+}
+$("bnav").addEventListener("click", e => {
+  const b = e.target.closest("button[data-go]"); if (!b) return; const g = b.dataset.go;
+  if (g === "more") { $("more").hidden = !$("more").hidden; return }
+  $("more").hidden = true;
+  if (g === "map") { setSheet("peek"); return }
+  if (curTab === g && side.dataset.s !== "peek") { setSheet("peek"); return }
+  setTab(g); if (side.dataset.s === "peek") setSheet("half"); syncNav()
+});
+$("more").addEventListener("click", e => {
+  const b = e.target.closest("button[data-go]"); $("more").hidden = true; if (!b) return; const g = b.dataset.go;
+  if (g === "share") return openShare(1);
+  if (g === "theme") return $("theme-btn").click();
+  if (g === "me") { setTab("teraz"); setSheet("half"); setTimeout(() => $("me-sec").scrollIntoView({ behavior: "smooth" }), 400); return }
+  setTab(g); if (side.dataset.s === "peek") setSheet("half"); syncNav()
+});
 
 /* ---------- start ---------- */
 if (mobile()) $("legend").open = false;

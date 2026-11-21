@@ -9,6 +9,7 @@ import { fetchNews } from "./news.js";
 import { translateMessages } from "./translate.js";
 import { aggregateRows, addIncidents, readStats } from "./stats.js";
 import { fetchMil, attachPhotos } from "./mil.js";
+import { shelters } from "./shelters.js";
 import { plPlace, plRegion } from "./plnames.js";
 
 const API = "https://neptun.in.ua";
@@ -280,6 +281,16 @@ async function handle(req, env) {
     return json({ ok: true, now: Date.now(), lastSnapshot: last && last.t, snapshots: last && last.n, ...(st ? JSON.parse(st.v) : {}) });
   }
   if (path === "/api/stats") { const days = [7, 14, 30, 90].includes(+url.searchParams.get("days")) ? +url.searchParams.get("days") : 7; return json(await readStats(env, days), 200, { "Cache-Control": "public, max-age=120" }) }
+  if (path === "/api/shelters") {
+    const lat = +url.searchParams.get("lat"), lon = +url.searchParams.get("lon");
+    if (!(lat > 48.5 && lat < 55.2 && lon > 13.8 && lon < 24.5)) return json({ error: "Wyszukiwanie schronów działa tylko w Polsce." }, 400);
+    const la = lat.toFixed(2), lo = lon.toFixed(2), key = new Request(`https://cache.local/shelters/${la}/${lo}`), cache = caches.default;
+    const hit = await cache.match(key); if (hit) return hit;
+    try {
+      const res = json(await shelters(+la, +lo), 200, { "Cache-Control": "public, max-age=86400" });
+      await cache.put(key, res.clone()); return res;
+    } catch (e) { return json({ error: String(e.message || e) }, 502) }
+  }
   if (path === "/api/rcb") return json((await kvGet(env, "rcb")) || { t: 0, items: [] }, 200, { "Cache-Control": "public, max-age=30" });
   if (path === "/api/news") return json((await kvGet(env, "news")) || { t: 0, items: [] }, 200, { "Cache-Control": "public, max-age=60" });
   if (path === "/api/messages") {
