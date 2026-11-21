@@ -142,7 +142,7 @@ a{color:var(--radar)}
 .brand h1 span{color:var(--red)}
 .brand small{display:flex;align-items:center;gap:6px;margin-top:4px;font:500 10.5px/1 var(--f-mono);color:var(--muted);letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
 .live{width:7px;height:7px;border-radius:50%;background:var(--dim);flex:none}
-.live.on{background:var(--ok);box-shadow:0 0 8px var(--ok);animation:blinkdot 1.4s ease-in-out infinite}
+.live.on{background:#ff2d43;box-shadow:0 0 0 0 rgba(255,45,67,.7),0 0 10px #ff2d43;animation:livedot 1.4s ease-out infinite}
 .live.err{background:var(--red)}.live.hist{background:var(--amber);box-shadow:0 0 8px var(--amber)}
 @keyframes blinkdot{50%{opacity:.35}}
 
@@ -226,6 +226,7 @@ select{background:var(--abyss);border:1px solid var(--edge-hi);border-radius:8px
 .tbtn{flex:none;height:36px;min-width:36px;padding:0 10px;border-radius:9px;border:1px solid var(--edge-hi);background:var(--tint-1);cursor:pointer;display:grid;place-items:center;font:600 11px var(--f-mono);letter-spacing:.06em}
 .tbtn.live{white-space:nowrap;min-width:max-content;width:max-content;color:var(--fg);border-color:rgba(255,59,78,.55);background:rgba(255,59,78,.1);gap:7px;display:flex;align-items:center;font-weight:700}
 .tbtn.live i{width:9px;height:9px;border-radius:50%;background:#ff2d43;box-shadow:0 0 0 0 rgba(255,45,67,.7),0 0 10px #ff2d43;animation:livedot 1.4s ease-out infinite}
+@keyframes liveglow{50%{box-shadow:0 0 16px rgba(255,45,67,.55),inset 0 0 8px rgba(255,45,67,.25);border-color:#ff2d43}}
 @keyframes livedot{0%{box-shadow:0 0 0 0 rgba(255,45,67,.75),0 0 10px #ff2d43}70%{box-shadow:0 0 0 8px rgba(255,45,67,0),0 0 14px #ff2d43}100%{box-shadow:0 0 0 0 rgba(255,45,67,0),0 0 10px #ff2d43}}
 .history .tbtn.live{color:var(--muted);border-color:var(--edge-hi);background:var(--tint-1)}.history .tbtn.live i{background:var(--dim);box-shadow:none;animation:none}
 .tbtn svg{width:16px;height:16px}
@@ -328,7 +329,10 @@ select{background:var(--abyss);border:1px solid var(--edge-hi);border-radius:8px
   #t-speed{display:none}
   #t-hours{padding:3px 2px;font-size:11px}
   .tbtn{height:32px;min-width:32px;padding:0 7px}
-  .tbtn.live span{display:none}
+  .tbtn.live{padding:0 9px;font-size:10.5px;letter-spacing:.04em}
+  .tbtn.live i{width:8px;height:8px}
+  .history .tbtn.live span{display:none}
+  body:not(.history) .tbtn.live{animation:liveglow 2s ease-in-out infinite}
   .tlabel{min-width:46px;font-size:10.5px}
   .tlabel small{font-size:8.5px}
   .side{position:fixed;left:0;right:0;top:auto;bottom:0;width:auto;height:min(88vh,calc(100vh - 56px));height:min(88dvh,calc(100dvh - 56px));z-index:1200;
@@ -507,6 +511,35 @@ h2 .badge{background:var(--red);color:#fff;border-radius:999px;padding:2px 7px;f
 .fl button{grid-row:1/3;grid-column:3}
 .orig{font-size:11.5px;color:var(--dim)}
 .orig summary{cursor:pointer;list-style:none;font:500 10.5px var(--f-mono);color:var(--dim)}
+
+/* karty samolotów ze zdjęciem */
+.mi:has(.mth){grid-template-columns:56px minmax(0,1fr) auto}
+.mi .mth{grid-row:1/3;width:56px;height:38px;object-fit:cover;border-radius:7px;border:1px solid color-mix(in srgb,var(--mc) 50%,transparent);background:var(--tint-1)}
+.mpop .leaflet-popup-content{margin:0;width:min(280px,74vw)!important}
+.mpop .leaflet-popup-content-wrapper{padding:0;overflow:hidden;border-radius:14px}
+.mcard{display:grid;border-top:3px solid var(--mc)}
+.mph{position:relative;display:block;aspect-ratio:16/9;max-height:34vh;background:#0b1424;overflow:hidden}
+.mph img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .6s}
+.mph:hover img{transform:scale(1.04)}
+.mph span{position:absolute;left:0;right:0;bottom:0;padding:14px 8px 5px;font:500 9.5px/1.2 var(--f-mono);color:#dfe8f5;background:linear-gradient(transparent,rgba(0,0,0,.75))}
+.mph.none{display:grid;place-items:center;aspect-ratio:16/7;color:var(--mc);background:radial-gradient(circle at 50% 40%,color-mix(in srgb,var(--mc) 22%,transparent),transparent 70%)}
+.mph.none svg{width:46px;height:46px;filter:drop-shadow(0 0 10px var(--mc))}
+.mph.none span{position:static;background:none;color:var(--muted);padding:0 0 6px}
+.mbody{padding:10px 12px 12px;display:grid;gap:6px}
+.mt{display:flex;align-items:center;justify-content:space-between;gap:8px}.mt b{font:700 16px/1 var(--f-disp);letter-spacing:.06em}
+.ms{font-size:12px;color:var(--muted)}
+.mkv{grid-template-columns:repeat(3,1fr)!important}
+/* moja lokalizacja */
+.memk{width:18px;height:18px;border-radius:50%;background:#38a8ff;border:3px solid #fff;box-shadow:0 0 0 0 rgba(56,168,255,.6);animation:mepulse 2s ease-out infinite}
+@keyframes mepulse{to{box-shadow:0 0 0 22px rgba(56,168,255,0)}}
+/* udostępnianie */
+.sharebar{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
+#share{position:fixed;inset:0;z-index:3000;background:rgba(2,6,14,.72);backdrop-filter:blur(6px);display:grid;place-items:center;padding:16px}
+#share[hidden]{display:none}
+#share .box{width:min(440px,100%);max-height:calc(100dvh - 32px);overflow:auto;background:var(--panel,#0b1424);border:1px solid var(--edge-hi);border-radius:18px;padding:14px;display:grid;gap:10px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+#share .hd{display:flex;justify-content:space-between;align-items:center}#share .hd b{font:700 15px/1 var(--f-disp);letter-spacing:.1em;text-transform:uppercase}
+#share img{width:100%;aspect-ratio:4/5;border-radius:12px;background:var(--tint-1);display:block}
+#share .row{display:flex;gap:8px;flex-wrap:wrap}#share .row>*{flex:1;text-align:center;text-decoration:none}
 </style>
 </head>
 <body>
@@ -527,11 +560,12 @@ h2 .badge{background:var(--red);color:#fff;border-radius:999px;padding:2px 7px;f
         <div class="stat" style="--c:var(--k-bal)"><b id="s-bal">0</b><span><i class="lf">Balistyczne</i><i class="ls">balist.</i></span></div>
         <div class="stat" style="--c:var(--k-kab)"><b id="s-kab">0</b><span><i class="lf">Bomby KAB</i><i class="ls">KAB</i></span></div>
         <div class="stat" style="--c:var(--red)"><b id="s-obl">0</b><span><i class="lf">Obwody z alarmem</i><i class="ls">obw. z alarmem</i><i class="lx">obwody</i></span></div>
+        <div class="stat" style="--c:#38a8ff" hidden><b id="s-me">—</b><span><i class="lf">Najbliżej Ciebie</i><i class="ls">od Ciebie</i><i class="lx">od Ciebie</i></span></div>
         <div class="stat" style="--c:var(--radar)"><b id="s-near">—</b><span><i class="lf">Najbliżej granicy RP</i><i class="ls">do granicy RP</i><i class="lx">do RP</i></span></div>
       </div>
       <div class="glass levelbox">
         <div class="level" id="level" data-l="0"><span class="lbl">Zagrożenie: </span><span id="level-t">niskie</span></div>
-        <div class="clockrow"><button class="themebtn" id="theme-btn" aria-label="Zmień motyw"></button><div class="clock" id="clock">--:--:--</div></div>
+        <div class="clockrow"><button class="themebtn" data-share="1" title="Udostępnij raport dnia" aria-label="Udostępnij raport dnia"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M8.7 10.7l6.6-3.4M8.7 13.3l6.6 3.4"/></svg></button><button class="themebtn" id="theme-btn" aria-label="Zmień motyw"></button><div class="clock" id="clock">--:--:--</div></div>
       </div>
     </div>
 
@@ -595,6 +629,7 @@ h2 .badge{background:var(--red);color:#fff;border-radius:999px;padding:2px 7px;f
         <h2>Statystyki <span class="n" id="st-n">—</span></h2>
         <div class="row"><div class="seg" id="st-range"><button data-d="7" aria-pressed="true">7 dni</button><button data-d="14">14 dni</button><button data-d="30">30 dni</button></div></div>
         <div class="kpis" id="st-kpi"></div>
+        <div class="sharebar"><button class="btn pri" data-share="1">Udostępnij raport dnia</button><button class="btn" data-share="7">Raport 7 dni</button><button class="btn" data-share="30">Raport 30 dni</button></div>
         <div class="chart"><div class="ch-t">Obiekty w powietrzu na dobę</div><div id="st-days"></div><div class="lg" id="st-lg"></div></div>
         <div class="chart"><div class="ch-t">Pora ataków (średnio najwięcej obiektów naraz, czas polski)</div><div id="st-hours"></div></div>
         <div class="checks"><label><input type="checkbox" id="heat-on"> Mapa cieplna tras na mapie (gdzie latało najwięcej obiektów)</label></div>
@@ -624,6 +659,13 @@ h2 .badge{background:var(--red);color:#fff;border-radius:999px;padding:2px 7px;f
       <div class="sec" data-tab="kom" id="msg-sec">
         <h2>Kanały monitoringu <span class="n">Telegram</span></h2>
         <div class="msgs" id="msgs"><span class="empty">Oczekiwanie na wiadomości…</span></div>
+      </div>
+      <div class="sec" data-tab="teraz" id="me-sec">
+        <h2>Moja okolica</h2>
+        <p class="note" id="me-info">Lokalizacja wyłączona.</p>
+        <div class="row"><button class="btn" id="me-btn">📍 Pokaż moją lokalizację</button>
+          <select id="me-r" aria-label="Promień ostrzeżeń"><option value="50">50 km</option><option value="100">100 km</option><option value="150">150 km</option><option value="250">250 km</option><option value="400">400 km</option></select></div>
+        <p class="note">Lokalizacja zostaje tylko na tym urządzeniu. Gdy obiekt wleci w wybrany promień, aplikacja pokaże alert.</p>
       </div>
       <div class="sec" data-tab="ust" id="push-sec">
         <h2>Powiadomienia w tle</h2>
@@ -668,6 +710,12 @@ h2 .badge{background:var(--red);color:#fff;border-radius:999px;padding:2px 7px;f
   </aside>
 </div>
 
+<div id="share" hidden role="dialog" aria-label="Udostępnij statystyki"><div class="box">
+  <div class="hd"><b>Udostępnij</b><button class="btn" id="share-x" aria-label="Zamknij">✕</button></div>
+  <img id="share-img" alt="Grafika ze statystykami">
+  <div class="row"><button class="btn pri" id="share-go" hidden>Udostępnij…</button><a class="btn" id="share-dl" href="#" download>Pobierz PNG</a><button class="btn" id="share-cp">Kopiuj</button></div>
+  <p class="note" id="share-st"></p>
+</div></div>
 <script src="config.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="geo.js"></script>

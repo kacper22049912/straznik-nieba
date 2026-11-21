@@ -1126,24 +1126,30 @@ const milKind = a => { for (const [re, n, c] of MIL_KIND) if (re.test(a.t || "")
 let milState = { ac: [], trails: {} }, milOn = store.get("milOn", true) !== false; const milLayer = L.layerGroup().addTo(map), milMk = new Map();
 $("mil-on").checked = milOn; $("mil-on").onchange = e => { milOn = e.target.checked; store.set("milOn", milOn); renderMil() };
 const milPos = (a, now) => { if (!a.gs || a.trk == null) return [a.lat, a.lon]; const h = Math.min(90, Math.max(0, (now - (a.ts || milState.t)) / 1000)) / 3600; return move([a.lat, a.lon], a.trk, a.gs * 1.852 * h) };
+function milCard(a) {
+  const alt = a.alt != null ? Math.round(a.alt * .3048).toLocaleString("pl-PL") + " m" : "—", sp = a.gs ? Math.round(a.gs * 1.852) + " km/h" : "—";
+  const ph = a.ph && a.ph.src ? `<a class="mph" href="${esc(a.ph.link || "https://www.planespotters.net/")}" target="_blank" rel="noopener"><img src="${esc(a.ph.src)}" alt="${esc(a.d || a.t)}" loading="lazy" referrerpolicy="no-referrer"><span>© ${esc(a.ph.by || "Planespotters.net")} · Planespotters.net</span></a>` : `<div class="mph none" style="--mc:${a.k.c}">${JET}<span>brak zdjęcia tego egzemplarza</span></div>`;
+  return `<div class="mcard" style="--mc:${a.k.c}">${ph}<div class="mbody"><div class="mt"><b>${esc(a.cs || a.r || a.h.toUpperCase())}</b><span class="tag" style="background:color-mix(in srgb,${a.k.c} 20%,transparent);color:${a.k.c}">${a.k.n}</span></div><div class="ms">${esc(a.d || a.t || "")}${a.r ? " · " + esc(a.r) : ""}</div>
+    <div class="kv mkv"><div><span>Wysokość</span><b>${alt}</b></div><div><span>Prędkość</span><b>${sp}</b></div><div><span>Kurs</span><b>${a.trk != null ? Math.round(a.trk) + "° " + dirName(a.trk) : "—"}</b></div></div>
+    ${a.sq === "7700" ? '<p class="note" style="color:#ff3b4e"><b>SQUAWK 7700 – sytuacja awaryjna</b></p>' : ""}</div></div>`
+}
 function renderMil() {
   const now = Date.now(), list = (milState.ac || []).filter(a => inPL([a.lat, a.lon])).map(a => ({ ...a, k: milKind(a), dist: 0 })).sort((a, b) => (b.alt || 0) - (a.alt || 0));
   $("mil-n").textContent = list.length ? list.length + " nad Polską" : "brak";
   const blocked = !list.length && milState.err && (!milState.t || milState.err.t > milState.t);
   if (blocked) { $("mil-n").textContent = "niedostępne"; $("mil").innerHTML = '<span class="empty">Darmowe serwisy ADS-B (adsb.lol, adsb.fi) odrzucają teraz zapytania z serwera aplikacji, więc samoloty wojskowe nie są pokazywane. Do stałego działania potrzebny jest klucz API.</span>' }
-  else $("mil").innerHTML = list.length ? list.slice(0, 20).map(a => `<button class="mi" data-h="${esc(a.h)}" style="--mc:${a.k.c}"><span class="ic">${JET}</span><b>${esc(a.cs || a.r || a.h.toUpperCase())}</b><span class="d">${a.dist < 1 ? "nad RP" : Math.round(a.dist) + " km"}</span><span>${esc(a.d || a.t || "")} · ${a.k.n}${a.alt != null ? " · " + Math.round(a.alt * .3048).toLocaleString("pl-PL") + " m" : ""}${a.gs ? " · " + Math.round(a.gs * 1.852) + " km/h" : ""}</span></button>`).join("") : '<span class="empty">Brak samolotów wojskowych nadających pozycję nad Polską.</span>';
+  else $("mil").innerHTML = list.length ? list.slice(0, 20).map(a => `<button class="mi" data-h="${esc(a.h)}" style="--mc:${a.k.c}">${a.ph && a.ph.src ? `<img class="mth" src="${esc(a.ph.src)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="ic">${JET}</span>`}<b>${esc(a.cs || a.r || a.h.toUpperCase())}</b><span class="d">${a.alt != null ? Math.round(a.alt * .3048).toLocaleString("pl-PL") + " m" : ""}</span><span>${esc(a.d || a.t || "")} · ${a.k.n}${a.gs ? " · " + Math.round(a.gs * 1.852) + " km/h" : ""}</span></button>`).join("") : '<span class="empty">Brak samolotów wojskowych nadających pozycję nad Polską.</span>';
   const seen = new Set();
   if (milOn) for (const a of list) {
     seen.add(a.h); const html = `<div class="mil" style="--mc:${a.k.c};--r:${Math.round(a.trk || 0)}deg">${JET}<em>${esc(a.cs || a.t || "MIL")}${a.alt != null ? " · FL" + Math.round(a.alt / 100) : ""}</em></div>`;
     let mk = milMk.get(a.h);
-    if (!mk) { mk = L.marker(milPos(a, now), { keyboard: false, zIndexOffset: 900, icon: L.divIcon({ className: "", html, iconSize: [30, 30], iconAnchor: [15, 15] }) }).bindTooltip("", { className: "tip", direction: "top", offset: [0, -12] }).addTo(milLayer); milMk.set(a.h, mk) }
-    else mk.setIcon(L.divIcon({ className: "", html, iconSize: [30, 30], iconAnchor: [15, 15] }));
-    mk._a = a;
-    mk.setTooltipContent(`<b style="color:${a.k.c}">✈ ${esc(a.cs || a.h.toUpperCase())}</b> · ${a.k.n}<br>${esc(a.d || a.t)}${a.r ? " · " + esc(a.r) : ""}<br>${a.alt != null ? Math.round(a.alt * .3048).toLocaleString("pl-PL") + " m · " : ""}${a.gs ? Math.round(a.gs * 1.852) + " km/h · " : ""}kurs ${Math.round(a.trk || 0)}°<br>${a.dist < 1 ? "<b>nad Polską</b>" : Math.round(a.dist) + " km od granicy RP"}${a.sq === "7700" ? '<br><b style="color:#ff3b4e">SQUAWK 7700 – sytuacja awaryjna</b>' : ""}`);
+    if (!mk) { mk = L.marker(milPos(a, now), { keyboard: false, zIndexOffset: 900, icon: L.divIcon({ className: "", html, iconSize: [30, 30], iconAnchor: [15, 15] }) }).bindPopup("", { className: "tip-pop mpop", maxWidth: 300, minWidth: 260 }).addTo(milLayer); milMk.set(a.h, mk) }
+    else if (mk._h !== html) mk.setIcon(L.divIcon({ className: "", html, iconSize: [30, 30], iconAnchor: [15, 15] }));
+    mk._h = html; mk._a = a; mk.setPopupContent(milCard(a));
   }
   for (const [h, mk] of milMk) if (!seen.has(h)) { milLayer.removeLayer(mk); milMk.delete(h) }
 }
-$("mil").addEventListener("click", e => { const b = e.target.closest(".mi"); if (!b) return; const mk = milMk.get(b.dataset.h); if (mk) { userMoved = true; map.flyTo(mk.getLatLng(), Math.max(map.getZoom(), 7), { duration: .8 }); setTimeout(() => mk.openTooltip(), 900) } });
+$("mil").addEventListener("click", e => { const b = e.target.closest(".mi"); if (!b) return; const mk = milMk.get(b.dataset.h); if (mk) { userMoved = true; if (mobile()) setSheet("peek"); map.flyTo(mk.getLatLng(), Math.max(map.getZoom(), 7), { duration: .8 }); setTimeout(() => mk.openPopup(), 900) } });
 // płynny ruch samolotów i ich ślady (rysowane w klatce radaru)
 function drawMil(PP) {
   if (!milOn || !milState.ac) return; const now = Date.now();
@@ -1156,6 +1162,76 @@ function drawMil(PP) {
   }
 }
 async function pollMil() { if (!WORKER) { $("mil").innerHTML = '<span class="empty">Dostępne, gdy działa serwer aplikacji.</span>'; return } try { milState = await fetchJSON(WORKER + "/api/mil"); renderMil() } catch (e) { } }
+
+/* ---------- moja lokalizacja: odległość najbliższego obiektu ode mnie ---------- */
+let me = store.get("me", null), meRadius = +store.get("meRadius", 150); const meLayer = L.layerGroup().addTo(map);
+function renderMe() {
+  meLayer.clearLayers(); const box = $("me-info");
+  if (!me) { box.textContent = "Lokalizacja wyłączona."; $("me-btn").textContent = "📍 Pokaż moją lokalizację"; $("s-me").parentElement.hidden = true; return }
+  $("me-btn").textContent = "📍 Wyłącz lokalizację"; $("s-me").parentElement.hidden = false;
+  L.circle([me.lat, me.lon], { radius: meRadius * 1000, color: "#38a8ff", weight: 1, dashArray: "4 6", fill: false, interactive: false }).addTo(meLayer);
+  L.marker([me.lat, me.lon], { keyboard: false, interactive: false, icon: L.divIcon({ className: "", html: '<div class="memk"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }) }).addTo(meLayer);
+  const act = view.filter(o => !o.areaOnly && !o.advisory && o.pos).map(o => ({ o, d: km([me.lat, me.lon], o.pos) })).sort((a, b) => a.d - b.d), n = act[0];
+  setStat("s-me", n ? Math.round(n.d) + " km" : "—");
+  box.innerHTML = n ? `Najbliżej Ciebie: <b>${esc(TM(n.o.type).n)}</b>, <b>${Math.round(n.d)} km</b> (${esc(place(n.o))}).` : "Brak obiektów w powietrzu.";
+  if (n && n.d < meRadius && mode === "live") addEvent(n.d < meRadius / 2 ? 2 : 1, `${TM(n.o.type).n} ${Math.round(n.d)} km od Ciebie`, place(n.o) + ".", "me:" + n.o.id + ":" + (n.d < meRadius / 2 ? 2 : 1), n.o.pos, `<svg viewBox="0 0 24 24">${SVG[n.o.type] || SVG.unknown}</svg>`);
+}
+$("me-btn").onclick = () => {
+  if (me) { me = null; store.set("me", null); renderMe(); return }
+  if (!navigator.geolocation) { $("me-info").textContent = "Ta przeglądarka nie udostępnia lokalizacji."; return }
+  $("me-info").textContent = "Pobieranie lokalizacji…";
+  navigator.geolocation.getCurrentPosition(p => { me = { lat: +p.coords.latitude.toFixed(3), lon: +p.coords.longitude.toFixed(3) }; store.set("me", me); renderMe(); userMoved = true; map.flyTo([me.lat, me.lon], 7, { duration: .8 }) },
+    e => { $("me-info").textContent = e.code === 1 ? "Nie zezwolono na lokalizację. Zmień to w ustawieniach przeglądarki." : "Nie udało się ustalić lokalizacji." }, { enableHighAccuracy: false, timeout: 15000, maximumAge: 600000 })
+};
+$("me-r").value = String(meRadius); $("me-r").onchange = e => { meRadius = +e.target.value; store.set("meRadius", meRadius); renderMe() };
+
+/* ---------- grafika do udostępnienia ---------- */
+function rr(c, x, y, w, h, r) { c.beginPath(); c.moveTo(x + r, y); c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r); c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath() }
+async function makeShare(days) {
+  let S = stats && stats.days && stDays === days ? stats : null; if (!S && WORKER) try { S = await fetchJSON(`${WORKER}/api/stats?days=${days}`, 30000) } catch (e) { }
+  const W = 1080, H = 1350, c = document.createElement("canvas"); c.width = W; c.height = H; const x = c.getContext("2d");
+  const g = x.createLinearGradient(0, 0, W, H); g.addColorStop(0, "#071226"); g.addColorStop(1, "#02060e"); x.fillStyle = g; x.fillRect(0, 0, W, H);
+  x.strokeStyle = "rgba(56,225,255,.08)"; x.lineWidth = 2; for (let r = 120; r < 900; r += 120) { x.beginPath(); x.arc(W * .78, H * .32, r, 0, 7); x.stroke() }
+  const rg = x.createLinearGradient(0, 0, W, 0); rg.addColorStop(0, "#ffffff"); rg.addColorStop(.5, "#ff2d43"); rg.addColorStop(1, "#ff2d43"); x.fillStyle = rg; x.fillRect(0, 0, W, 10);
+  x.strokeStyle = "#38e1ff"; x.lineWidth = 5; x.beginPath(); x.arc(110, 110, 42, 0, 7); x.stroke(); x.fillStyle = "#ff2d43"; x.beginPath(); x.arc(110, 110, 8, 0, 7); x.fill();
+  x.fillStyle = "#eaf1fb"; x.font = "700 56px 'Chakra Petch', 'Arial Narrow', sans-serif"; x.fillText("STRAŻNIK", 175, 105); const sw = x.measureText("STRAŻNIK ").width; x.fillStyle = "#ff2d43"; x.fillText("NIEBA", 175 + sw, 105);
+  x.fillStyle = "#93a3bf"; x.font = "500 26px 'JetBrains Mono', monospace";
+  const dd = days === 1 ? "Raport dnia · " + new Date().toLocaleDateString("pl-PL") : `Raport z ${days} dni · do ${new Date().toLocaleDateString("pl-PL")}`; x.fillText(dd.toUpperCase(), 175, 145);
+  const byDay = new Map((S && S.days || []).map(d => [d.day, d])), ds = Array.from({ length: days }, (_, i) => { const k = new Date(Date.now() - (days - 1 - i) * 864e5).toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }); return byDay.get(k) || { day: k, types: {}, hours: Array(24).fill(0), pl: [] } }), sum = k => ds.reduce((a, d) => a + (d.types[k] || 0), 0);
+  const best = ds.filter(d => d.minD).sort((a, b) => a.minD.d - b.minD.d)[0], pl = ds.flatMap(d => d.pl || []);
+  const K = [[sum("uav") + sum("recon"), "DRONY", "#ff3b4e"], [sum("missile"), "POCISKI MANEWR.", "#ffb020"], [sum("ballistic"), "BALISTYCZNE", "#ff4fd8"], [sum("kab"), "BOMBY KAB", "#ffe14d"], [best ? (best.minD.d < 1 ? "NAD RP" : best.minD.d + " km") : "—", "NAJBLIŻEJ RP", "#38e1ff"], [pl.length, "ZDARZENIA W POLSCE", "#ff7a00"]];
+  K.forEach(([v, l, col], i) => { const cx2 = 60 + (i % 3) * 330, cy2 = 210 + Math.floor(i / 3) * 190; rr(x, cx2, cy2, 300, 165, 22); x.fillStyle = "rgba(255,255,255,.05)"; x.fill(); x.strokeStyle = "rgba(120,170,255,.18)"; x.lineWidth = 2; x.stroke();
+    x.fillStyle = col; x.font = "700 72px 'Chakra Petch', sans-serif"; x.fillText(String(v), cx2 + 26, cy2 + 92); x.fillStyle = "#93a3bf"; x.font = "500 22px 'JetBrains Mono', monospace"; x.fillText(l, cx2 + 28, cy2 + 135) });
+  // wykres
+  const cy0 = 640, chH = 260; x.fillStyle = "#93a3bf"; x.font = "600 24px 'JetBrains Mono', monospace"; x.fillText(days === 1 ? "OBIEKTY W POWIETRZU W CIĄGU DOBY" : "OBIEKTY NA DOBĘ", 60, cy0 - 20);
+  if (days === 1) { const hrs = (ds[0] && ds[0].hours) || Array(24).fill(0), mx = Math.max(1, ...hrs); hrs.forEach((v, h) => { const bh = (chH - 30) * v / mx, bx = 60 + h * 40; x.fillStyle = v >= mx * .66 ? "#ff3b4e" : "#38e1ff"; x.globalAlpha = .35 + .65 * v / mx; rr(x, bx, cy0 + chH - 30 - bh, 30, Math.max(3, bh), 6); x.fill(); x.globalAlpha = 1; if (h % 3 === 0) { x.fillStyle = "#5f6f8c"; x.font = "500 20px 'JetBrains Mono', monospace"; x.fillText(h + ":00", bx - 6, cy0 + chH) } }) }
+  else { const vals = ds.map(d => Object.values(d.types).reduce((a, b) => a + b, 0)), mx = Math.max(1, ...vals), bw = Math.min(110, 960 / Math.max(1, vals.length)); vals.forEach((v, i) => { const bh = (chH - 30) * v / mx, bx = 60 + i * bw + bw * .15; const gg = x.createLinearGradient(0, cy0 + chH - 30 - bh, 0, cy0 + chH - 30); gg.addColorStop(0, "#ff3b4e"); gg.addColorStop(1, "#7a1220"); x.fillStyle = gg; rr(x, bx, cy0 + chH - 30 - bh, bw * .7, Math.max(3, bh), 8); x.fill(); x.fillStyle = "#5f6f8c"; x.font = "500 20px 'JetBrains Mono', monospace"; if (vals.length <= 14 || i % 3 === 0) x.fillText(ds[i].day.slice(8, 10) + "." + ds[i].day.slice(5, 7), bx, cy0 + chH) }) }
+  // mapa Polski ze zdarzeniami
+  const mx0 = 70, my0 = 945, mw = 390, mh = 300, bb = [49, 54.9, 14.1, 24.2], pr = (la, lo) => [mx0 + (lo - bb[2]) / (bb[3] - bb[2]) * mw, my0 + (bb[1] - la) / (bb[1] - bb[0]) * mh];
+  x.beginPath(); for (const poly of G.PL || []) { const r0 = poly[0]; r0.forEach((p, i) => { const [a, b] = pr(p[0], p[1]); i ? x.lineTo(a, b) : x.moveTo(a, b) }); x.closePath() }
+  x.fillStyle = "rgba(14,29,53,.9)"; x.fill(); x.strokeStyle = "#ffffff"; x.lineWidth = 4; x.stroke(); x.strokeStyle = "#ff2d43"; x.lineWidth = 2; x.stroke();
+  const inc = (newsState.items || []).filter(n => n.impact && n.place && n.t > Date.now() - days * 864e5);
+  for (const n of inc) { const [a, b] = pr(n.place.lat, n.place.lon); x.fillStyle = (INC[n.kind] || INC.debris).c; x.beginPath(); x.arc(a, b, 12, 0, 7); x.fill(); x.strokeStyle = "#fff"; x.lineWidth = 3; x.stroke() }
+  x.fillStyle = "#93a3bf"; x.font = "600 24px 'JetBrains Mono', monospace"; x.fillText("ZDARZENIA W POLSCE", 530, 980);
+  x.font = "500 24px 'IBM Plex Sans', sans-serif"; let yy = 1025; const uniq = [...new Map([...inc.map(n => [n.place.name, { name: n.place.name, kind: n.kind }]), ...pl.filter(p => p.place).map(p => [p.place, { name: p.place, kind: p.kind }])]).values()].slice(0, 6);
+  if (!uniq.length) { x.fillStyle = "#3be39b"; x.fillText("Brak doniesień o upadkach w Polsce.", 530, yy) }
+  for (const n of uniq) { x.fillStyle = (INC[n.kind] || INC.debris).c; x.beginPath(); x.arc(542, yy - 8, 8, 0, 7); x.fill(); x.fillStyle = "#eaf1fb"; x.fillText(`${n.name} · ${(INC[n.kind] || INC.debris).n.toLowerCase()}`, 562, yy); yy += 42 }
+  x.fillStyle = "#5f6f8c"; x.font = "500 21px 'JetBrains Mono', monospace"; x.fillText(location.host || "straznik-nieba", 60, H - 62);
+  x.font = "400 19px 'IBM Plex Sans', sans-serif"; x.fillText("Dane: NEPTUN, RCB, TVN24/RMF24/Polsat News. Nie jest to oficjalny system ostrzegania.", 60, H - 30);
+  return c
+}
+async function openShare(days) {
+  const m = $("share"); m.hidden = false; $("share-img").removeAttribute("src"); $("share-st").textContent = "Tworzenie grafiki…";
+  const c = await makeShare(days); const blob = await new Promise(r => c.toBlob(r, "image/png"));
+  const url = URL.createObjectURL(blob); $("share-img").src = url; $("share-dl").href = url; $("share-dl").download = `straznik-nieba-${new Date().toISOString().slice(0, 10)}.png`; $("share-st").textContent = "";
+  const file = new File([blob], $("share-dl").download, { type: "image/png" });
+  $("share-go").hidden = !(navigator.canShare && navigator.canShare({ files: [file] }));
+  $("share-go").onclick = () => navigator.share({ files: [file], title: "Strażnik Nieba", text: "Sytuacja w powietrzu przy granicy Polski" }).catch(() => { });
+  $("share-cp").onclick = async () => { try { await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]); $("share-st").textContent = "Skopiowano obraz." } catch (e) { $("share-st").textContent = "Kopiowanie obrazu nie jest obsługiwane – użyj „Pobierz”." } };
+}
+for (const b of document.querySelectorAll("[data-share]")) b.onclick = () => openShare(+b.dataset.share);
+$("share-x").onclick = () => { $("share").hidden = true };
+$("share").addEventListener("click", e => { if (e.target.id === "share") $("share").hidden = true });
 
 /* ---------- zakładki panelu ---------- */
 let curTab = store.get("tab", "teraz");
@@ -1212,5 +1288,6 @@ pollAlerts(); pollMsgs();
 setInterval(() => { if (!document.hidden) pollAlerts() }, 30000);
 setInterval(() => { if (!document.hidden) pollMsgs() }, 20000);
 setInterval(() => { if (live.haveData && mode === "live" && !document.hidden) recompute() }, 2000);
+renderMe(); setInterval(() => { if (me && !document.hidden) renderMe() }, 5000);
 setInterval(() => { if (!document.hidden && (live.haveData || hist.snaps.length)) { try { buildChains(); renderLost() } catch (e) { } } }, 10000);
 refreshAlerts(); setLabel(); loadHistory(); drawTrack();

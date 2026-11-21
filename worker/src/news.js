@@ -7,7 +7,7 @@
 import { PLACES } from "./places.js";
 
 const UA = "StraznikNieba/1.0 (+https://github.com/kacper22049912/straznik-nieba)";
-const VERSION = 3;
+const VERSION = 4;
 export const FEEDS = [
   ["TVN24", "https://tvn24.pl/najnowsze.xml"],
   ["RMF24", "https://www.rmf24.pl/fakty/feed"],
@@ -112,17 +112,43 @@ export function classify(it) {
   return { impact: IMPACT.test(s), kind: kindOf(s) };
 }
 
+// Miejsce tylko wtedy, gdy tekst mówi wprost, że coś TAM spadło: słowo o upadku i miejsce w tym samym zdaniu,
+// połączone przyimkiem („spadł w Nowym Lipowcu”, „szczątki pod Biłgorajem”, „w miejscowości Chmielek … spadł”).
+const FALL = "(?:[Ss]pad(?:ł|ła|ły|ło|li)|[Uu]pad(?:ek|ku|ł|ła|ło|ły)|[Rr]ozbi(?:ł|ła|ło|ły)|[Ss]zczątk[a-ząćęłńóśźż]*|[Ss]padając[a-ząćęłńóśźż]*)";
+const PREP = "(?:w miejscowości|w pobliżu miejscowości|w okolicach|w rejonie|na terenie|niedaleko|w pobliżu|pod|koło|obok|we|w)";
+const NAMEW = `[A-ZĄĆĘŁŃÓŚŹŻ][${L}-]+`;
+const NAME = `(${NAMEW}(?:\\s+(?:nad|pod)\\s+${NAMEW}|\\s+${NAMEW}){0,2})`;
+const PREPX = PREP.replace("(?:w miejscowości", "(?:[Ww] miejscowości").replace("|we|w)", "|[Ww]e|[Ww])").replace("|pod|", "|[Pp]od|").replace("|na terenie|", "|[Nn]a terenie|");
+const RX_AFTER = new RegExp(`${FALL}[^.!?]{0,60}?(?:^|\\s)${PREPX}\\s+${NAME}`, "g");
+const RX_BEFORE = new RegExp(`(?:^|\\s)${PREPX}\\s+${NAME}[^.!?]{0,60}?${FALL}`, "g");
+const RX_TITLE = new RegExp(`^${NAME}\\.\\s+[^.!?]{0,80}?${FALL}`);
+const NOT_PLACE = /^(Polsce|Polski|Polska|Ukrainie|Rosji|Białorusi|Lubelskiem|Podkarpaciu|Lubelszczyźnie|Mazowszu|Piątek|Czwartek|Sobotę|Niedzielę|Poniedziałek|Wtorek|Środę|Nocy|Rano)$/;
+// odmiana → mianownik (kilka wariantów do sprawdzenia w OpenStreetMap)
+function nominatives(phrase) {
+  const ws = phrase.split(/\s+/), last = ws[ws.length - 1], out = new Set([phrase]);
+  const adj = w => w.replace(/ym$/, "y").replace(/im$/, "i").replace(/ej$/, "a").replace(/iej$/, "a");
+  const endings = [[/cu$/, "iec"], [/ku$/, "ek"], [/iu$/, ""], [/ie$/, ""], [/ie$/, "a"], [/ach$/, "y"], [/em$/, ""], [/u$/, ""], [/y$/, "a"], [/ą$/, "a"], [/owie$/, "ów"], [/rze$/, "r"], [/le$/, "ła"]];
+  for (const [re, to] of endings) if (re.test(last)) out.add([...ws.slice(0, -1).map(adj), last.replace(re, to)].join(" "));
+  if (ws.length > 1) out.add([...ws.slice(0, -1).map(adj), last].join(" "));
+  return [...out].slice(0, 5);
+}
+export function fallPlaces(text, title) {
+  const found = [];
+  if (title) { const m = title.match(RX_TITLE); if (m) found.push(m[1].trim()) }
+  const precise = [];
+  for (const sent of text.split(/(?<=[.!?])\s+/)) for (const rx of [RX_AFTER, RX_BEFORE]) { rx.lastIndex = 0; let m; while ((m = rx.exec(sent))) { const n = m[1].replace(/\s+(?:w|we|na|i|oraz)$/i, "").trim(); if (NOT_PLACE.test(n.split(/\s+/)[0])) continue; (/miejscowości\s*$/.test(sent.slice(0, m.index + m[0].indexOf(m[1])).trim()) ? precise : found).push(n) } }
+  // najpierw „w miejscowości X” (najdokładniejsze), potem pozostałe
+  return [...new Set([...precise, ...found])];
+}
 async function locate(env, it, ctx) {
-  const s = it.title + ". " + it.desc;
-  const pow = powiaty(s)[0];
-  for (const v of villages(s)) {
-    const g = (pow && await geocode(env, `${v}, powiat ${pow}`, ctx)) || await geocode(env, v, ctx);
-    if (g) return { ...g, name: v, how: "village" };
+  const s = it.title + ". " + it.desc, pow = powiaty(s)[0];
+  for (const ph of fallPlaces(s, it.title)) {
+    const town = findPlace(ph); if (town) return { ...town, how: "town", phrase: ph };
+    for (const cand of nominatives(ph)) {
+      const g = (pow && await geocode(env, `${cand}, powiat ${pow}`, ctx)) || await geocode(env, cand, ctx);
+      if (g && g.name.slice(0, 4).toLowerCase() === cand.slice(0, 4).toLowerCase()) return { ...g, name: g.name, how: "village", phrase: ph };
+    }
   }
-  // miasto tylko w zdaniu (albo tytule), które mówi o upadku / wybuchu
-  if (IMPACT.test(it.title)) { const p = findPlace(it.title); if (p) return { ...p, how: "town" } }
-  for (const sent of s.split(/(?<=[.!?])\s+/)) if (IMPACT.test(sent)) { const p = findPlace(sent); if (p) return { ...p, how: "town" } }
-  if (pow) { const g = await geocode(env, `powiat ${pow}`, ctx); if (g) return { ...g, name: "pow. " + pow, how: "powiat", approx: true } }
   return null;
 }
 
@@ -150,14 +176,6 @@ export async function fetchNews(prev, env) {
       keep.set(id, { id, t: it.t || Date.now(), title: it.title, desc: it.desc.slice(0, 300), link: it.link, src: it.src, kind: c.kind, impact: c.impact, place });
       titles.add(it.title.toLowerCase());
     }
-  }
-  // doniesienia bez miejsca: szukamy w tekście (także w odmianie) miejsc znalezionych w innych doniesieniach
-  const known = [...new Map([...keep.values()].filter(i => i.place && i.place.how !== "powiat").map(i => [i.place.name, i.place])).values()];
-  for (const i of keep.values()) {
-    if (!i.impact || i.place) continue;
-    const toks = (i.title + " " + i.desc).split(new RegExp(`[^${L}-]+`)).filter(Boolean);
-    const hit = known.find(p => { const ws = p.name.split(/\s+/); return toks.some((_, k) => ws.every((w, j) => toks[k + j] && (w.length <= 3 ? toks[k + j] === w : wordMatch(toks[k + j], w) || toks[k + j] === w + "m"))) });
-    if (hit) i.place = { ...hit, how: "same" };
   }
   const items = [...keep.values()].sort((a, b) => b.t - a.t).slice(0, 40);
   return { v: VERSION, t: Date.now(), items, all, errors: results.filter(r => r.status === "rejected").map(r => String(r.reason && r.reason.message || r.reason)) };

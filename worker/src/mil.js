@@ -26,3 +26,28 @@ export async function fetchMil(prev, allowBackup) {
   }
   return { t: now, src, ac, trails };
 }
+
+// Prawdziwe zdjęcia konkretnego egzemplarza z Planespotters.net (po kodzie transpondera, zapasowo po rejestracji).
+// Wynik zapamiętujemy w D1: znalezione zdjęcie 30 dni, brak zdjęcia 2 dni. Najwyżej 5 nowych zapytań na minutę.
+async function lookupPhoto(a) {
+  for (const url of [`https://api.planespotters.net/pub/photos/hex/${a.h}`, a.r ? `https://api.planespotters.net/pub/photos/reg/${encodeURIComponent(a.r)}` : null].filter(Boolean)) {
+    try {
+      const r = await fetch(url, { headers: { "User-Agent": UA, Accept: "application/json" } });
+      if (!r.ok) continue;
+      const p = ((await r.json()).photos || [])[0];
+      if (p) return { src: (p.thumbnail_large || p.thumbnail || {}).src, link: p.link, by: p.photographer };
+    } catch (e) { }
+  }
+  return null;
+}
+export async function attachPhotos(env, m) {
+  let budget = 5; const now = Date.now();
+  for (const a of m.ac) {
+    const row = await env.DB.prepare("SELECT v, t FROM photo WHERE h=?").bind(a.h).first();
+    if (row) { const v = JSON.parse(row.v); if (v || now - row.t < 2 * 864e5) { a.ph = v; continue } }
+    if (budget-- <= 0) continue;
+    const v = await lookupPhoto(a); a.ph = v;
+    await env.DB.prepare("INSERT OR REPLACE INTO photo(h, v, t) VALUES(?,?,?)").bind(a.h, JSON.stringify(v), now).run();
+  }
+  return m;
+}

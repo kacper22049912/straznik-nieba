@@ -29,16 +29,17 @@ export async function aggregateRows(env, t, rows, distFn, roughFn) {
 }
 
 // zdarzenia w Polsce (upadki/wybuchy z mediów) dopisywane do dnia, w którym się ukazały
-export async function addIncidents(env, items) {
-  const byDay = new Map();
-  for (const n of items) if (n.impact) { const d = dayKey(n.t); (byDay.get(d) || byDay.set(d, []).get(d)).push(n) }
-  const stmts = [];
-  for (const [day, list] of byDay) {
-    const r = await env.DB.prepare("SELECT d FROM agg WHERE day=?").bind(day).first();
-    const a = r ? JSON.parse(r.d) : blank(day); let changed = false;
-    for (const n of list) if (!a.pl[n.id]) { a.pl[n.id] = { t: n.t, title: n.title, kind: n.kind, place: n.place ? n.place.name : null, link: n.link }; changed = true }
-    if (changed) stmts.push(env.DB.prepare("INSERT OR REPLACE INTO agg(day, d) VALUES(?,?)").bind(day, JSON.stringify(a)));
+export async function addIncidents(env, items, v = 0) {
+  // gdy zmienia się sposób rozpoznawania miejsc (wersja), zdarzenia z ostatnich dni są liczone od nowa
+  const since = dayKey(Date.now() - 4 * 864e5), rows = (await env.DB.prepare("SELECT day, d FROM agg WHERE day >= ?").bind(since).all()).results || [];
+  const days = new Map(rows.map(r => [r.day, { a: JSON.parse(r.d), changed: false }]));
+  for (const [, x] of days) if (x.a.pv !== v) { x.a.pl = {}; x.a.pv = v; x.changed = true }
+  for (const n of items) if (n.impact) {
+    const day = dayKey(n.t); let x = days.get(day);
+    if (!x) { if (day < since) continue; x = { a: { ...blank(day), pv: v }, changed: true }; days.set(day, x) }
+    if (!x.a.pl[n.id]) { x.a.pl[n.id] = { t: n.t, title: n.title, kind: n.kind, place: n.place ? n.place.name : null, link: n.link }; x.changed = true }
   }
+  const stmts = [...days].filter(([, x]) => x.changed).map(([day, x]) => env.DB.prepare("INSERT OR REPLACE INTO agg(day, d) VALUES(?,?)").bind(day, JSON.stringify(x.a)));
   if (stmts.length) await env.DB.batch(stmts);
 }
 

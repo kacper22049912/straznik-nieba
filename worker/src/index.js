@@ -8,7 +8,7 @@ import { fetchRcb } from "./rcb.js";
 import { fetchNews } from "./news.js";
 import { translateMessages } from "./translate.js";
 import { aggregateRows, addIncidents, readStats } from "./stats.js";
-import { fetchMil } from "./mil.js";
+import { fetchMil, attachPhotos } from "./mil.js";
 import { plPlace, plRegion } from "./plnames.js";
 
 const API = "https://neptun.in.ua";
@@ -80,6 +80,7 @@ const SCHEMA = [
   "CREATE TABLE IF NOT EXISTS tr(h TEXT PRIMARY KEY, pl TEXT, t INTEGER)",
   "CREATE TABLE IF NOT EXISTS geo(q TEXT PRIMARY KEY, v TEXT, t INTEGER)",
   "CREATE TABLE IF NOT EXISTS agg(day TEXT PRIMARY KEY, d TEXT)",
+  "CREATE TABLE IF NOT EXISTS photo(h TEXT PRIMARY KEY, v TEXT, t INTEGER)",
 ];
 let schemaReady = false;
 async function ensureSchema(env) { if (schemaReady) return; await env.DB.batch(SCHEMA.map(s => env.DB.prepare(s))); schemaReady = true }
@@ -133,6 +134,7 @@ async function poll(env, st, i) {
 async function milWork(env, allowBackup) {
   try {
     const prev = await kvGet(env, "mil"), m = await fetchMil(prev, allowBackup);
+    try { await attachPhotos(env, m) } catch (e) { }
     await kvPut(env, "mil", m).run();
   } catch (e) { await kvPut(env, "mil_err", { t: Date.now(), error: String(e && e.message || e) }).run().catch(() => { }) }
 }
@@ -155,6 +157,7 @@ async function minuteWork(env, st) {
     env.DB.prepare("DELETE FROM sent WHERE t < ?").bind(now - 12 * 3600e3),
     env.DB.prepare("DELETE FROM inbox WHERE t < ?").bind(now - 3600e3),
     env.DB.prepare("DELETE FROM tr WHERE t < ?").bind(now - 2 * 864e5),
+    env.DB.prepare("DELETE FROM photo WHERE t < ?").bind(now - 30 * 864e5),
     env.DB.prepare("DELETE FROM kv WHERE k='airports' OR k='aggCursor'"));
   if (core.length) await env.DB.batch(core);
 
@@ -189,7 +192,7 @@ async function minuteWork(env, st) {
     try {
       const prev = await kvGet(env, "news"), news = await fetchNews(prev, env); delete news.all;
       await kvPut(env, "news", news).run();
-      try { await addIncidents(env, news.items) } catch (e) { }
+      try { await addIncidents(env, news.items, news.v) } catch (e) { }
       for (const n of news.items) if (n.t > now - 3 * 3600e3 && n.impact) notes.push({ key: "news:" + n.id, pref: "news", msg: { title: "📰 " + n.title, body: `${n.src}${n.place ? " · " + n.place.name : ""}. Doniesienie mediów.`, tag: "news-" + n.id, level: 1, ll: n.place ? [n.place.lat, n.place.lon] : null } });
     } catch (e) { }
   }
