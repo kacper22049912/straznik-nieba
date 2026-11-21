@@ -6,7 +6,7 @@ const R = 3000;
 
 function query(lat, lon) {
   const a = `(around:${R},${lat},${lon})`;
-  return `[out:json][timeout:20];(
+  return `[out:json][timeout:10];(
 nwr${a}["amenity"="shelter"]["shelter_type"~"bomb|air_raid|civil|underground",i];
 nwr${a}["air_raid_shelter"="yes"];
 nwr${a}["emergency"~"^(shelter|air_raid_shelter)$"];
@@ -29,15 +29,15 @@ const RANK = { schron: 0, bunkier: 1, metro: 2, przejście: 3, parking: 4, inne:
 const dist = (a, b, c, d) => { const R0 = Math.PI / 180, x = (d - b) * Math.cos((a + c) / 2 * R0) * 111.32, y = (c - a) * 110.57; return Math.hypot(x, y) };
 
 export async function shelters(lat, lon) {
-  let data = null, err = null;
+  let data = null; const errs = [];
   for (const ep of EPS) {
     try {
-      const r = await fetch(ep, { method: "POST", body: "data=" + encodeURIComponent(query(lat, lon)), headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": "StraznikNieba/1.0 (+https://github.com/kacper22049912/straznik-nieba)" } });
-      if (!r.ok) throw new Error(ep.split("/")[2] + ": HTTP " + r.status);
+      const r = await fetch(ep, { method: "POST", signal: AbortSignal.timeout(12000), body: "data=" + encodeURIComponent(query(lat, lon)), headers: { "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json", "User-Agent": "StraznikNieba/1.0 (+https://github.com/kacper22049912/straznik-nieba)" } });
+      if (!r.ok) throw new Error("HTTP " + r.status);
       data = await r.json(); break;
-    } catch (e) { err = String(e.message || e) }
+    } catch (e) { errs.push(ep.split("/")[2] + ": " + (e.name === "TimeoutError" ? "przekroczony czas" : String(e.message || e))) }
   }
-  if (!data) throw new Error(err || "Overpass niedostępny");
+  if (!data) throw new Error(errs.join("; ") || "Overpass niedostępny");
   const seen = new Set(), out = [];
   for (const e of data.elements || []) {
     const la = e.lat ?? (e.center && e.center.lat), lo = e.lon ?? (e.center && e.center.lon); if (la == null) continue;
