@@ -63,11 +63,27 @@ setTimeout(() => { $("legend-rows").innerHTML += ["missile", "drone", "explosion
 const map = L.map("map", { zoomSnap: .25, minZoom: 4, maxZoom: 17, zoomControl: false, attributionControl: false, preferCanvas: true, maxBounds: [[40, 5], [63, 47]] });
 L.control.zoom({ position: "bottomright" }).addTo(map);
 L.control.scale({ imperial: false, position: "bottomright" }).addTo(map);
-// ulice pokazywane dopiero po przybliżeniu (np. przy szukaniu schronów)
-const streetUrl = () => `https://{s}.basemaps.cartocdn.com/${document.documentElement.dataset.theme === "light" || (document.documentElement.dataset.theme !== "dark" && matchMedia("(prefers-color-scheme: light)").matches) ? "light_all" : "dark_all"}/{z}/{x}/{y}{r}.png`;
-const streets = L.tileLayer(streetUrl(), { subdomains: "abcd", maxZoom: 19, opacity: .9, attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> © <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>' });
+// styl mapy: radar (własna mapa, ulice dopiero po przybliżeniu), ulice albo zdjęcia satelitarne
+const lightMode = () => document.documentElement.dataset.theme === "light" || (document.documentElement.dataset.theme !== "dark" && matchMedia("(prefers-color-scheme: light)").matches);
+const streetUrl = () => `https://{s}.basemaps.cartocdn.com/${lightMode() ? "light_all" : "dark_all"}/{z}/{x}/{y}{r}.png`;
+const OSM_ATTR = '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> © <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>';
+const streets = L.tileLayer(streetUrl(), { subdomains: "abcd", maxZoom: 19, attribution: OSM_ATTR });
+const sat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", { maxZoom: 19, maxNativeZoom: 18, attribution: "Zdjęcia: Esri, Maxar, Earthstar Geographics" });
+const satLabels = L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png", { subdomains: "abcd", maxZoom: 19, minZoom: 8, opacity: .9 });
 const attrib = L.control.attribution({ prefix: false, position: "bottomleft" });
-function updStreets() { const on = map.getZoom() >= 9.5; if (on && !map.hasLayer(streets)) { streets.setUrl(streetUrl()); streets.addTo(map); attrib.addTo(map) } else if (!on && map.hasLayer(streets)) { map.removeLayer(streets); attrib.remove() } }
+let mapStyle = store.get("mapStyle", "radar"), baseReady = false;
+function updStreets() {
+  if (!baseReady) return;
+  const z = map.getZoom(), tiles = mapStyle === "sat" ? "sat" : (mapStyle === "ulice" || z >= 9.5) ? "streets" : null;
+  const want = new Set(tiles === "sat" ? [sat, satLabels] : tiles === "streets" ? [streets] : []);
+  for (const l of [streets, sat, satLabels]) { if (want.has(l) && !map.hasLayer(l)) { if (l === streets) l.setUrl(streetUrl()); l.addTo(map) } else if (!want.has(l) && map.hasLayer(l)) map.removeLayer(l) }
+  if (want.size) attrib.addTo(map); else attrib.remove();
+  // gdy pod spodem są kafelki, własne wypełnienia mapy robią się przezroczyste
+  const fo = !tiles ? 1 : tiles === "sat" ? 0 : (z >= 9.5 ? 0 : .35);
+  for (const [, l] of base.nei) l.setStyle({ fillOpacity: fo });
+  if (base.pl.length) base.pl[0].setStyle({ fillOpacity: !tiles ? 1 : tiles === "sat" ? 0 : (z >= 9.5 ? .06 : .3) });
+  map.getContainer().classList.toggle("map-sat", tiles === "sat");
+}
 map.on("zoomend", updStreets);
 const svgR = L.svg({ padding: .3 });
 const HOME = () => mobile() ? [[48.4, 14.1], [54.9, 30.8]] : [[45.6, 13.8], [55.2, 38.5]];
@@ -100,7 +116,7 @@ function styleBase() {
   if (base.pl.length) { base.pl[0].setStyle({ fillColor: p.pl }); base.pl[1].setStyle({ opacity: p.glow }); base.pl[3].setStyle({ color: p.plLine }) }
   const meta = document.querySelector('meta[name="theme-color"]'); if (meta) meta.content = p.meta;
 }
-styleBase();
+styleBase(); baseReady = true; updStreets();
 const label = (ll, html, cls) => L.marker(ll, { interactive: false, keyboard: false, icon: L.divIcon({ className: "", html: `<div class="${cls}">${html}</div>`, iconSize: null, iconAnchor: [3, 7] }) });
 [["POLSKA", 52.1, 18.2, "country pl"], ["UKRAINA", 49.0, 30.5, "country"], ["BIAŁORUŚ", 53.5, 27.8, "country"], ["LITWA", 55.35, 24.0, "country"], ["ROSJA", 54.95, 21.3, "country"], ["SŁOWACJA", 48.75, 19.3, "country"], ["CZECHY", 49.75, 15.3, "country"], ["MOŁDAWIA", 47.2, 28.4, "country"]]
   .forEach(([t, a, b, c]) => label([a, b], t, c).addTo(map));
@@ -1053,7 +1069,7 @@ function setTheme(t) {
   $("theme-btn").innerHTML = t === "light" ? SUN : t === "dark" ? MOON : AUTO;
   $("theme-btn").title = "Motyw: " + { auto: "automatyczny", light: "jasny", dark: "ciemny" }[t];
   for (const b of $("theme-seg").querySelectorAll("button")) b.setAttribute("aria-pressed", b.dataset.t === t);
-  styleBase(); if (map.hasLayer(streets)) streets.setUrl(streetUrl()); lastAlertsKey = ""; refreshAlerts(); for (const mk of markers.values()) mk._h = ""; if (live.haveData || mode === "hist") recompute(); drawTrack()
+  styleBase(); if (map.hasLayer(streets)) streets.setUrl(streetUrl()); updStreets(); lastAlertsKey = ""; refreshAlerts(); for (const mk of markers.values()) mk._h = ""; if (live.haveData || mode === "hist") recompute(); drawTrack()
 }
 $("theme-btn").onclick = () => setTheme({ auto: "light", light: "dark", dark: "auto" }[themeSetting()]);
 $("theme-seg").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setTheme(b.dataset.t) });
@@ -1174,7 +1190,7 @@ let me = store.get("me", null), meRadius = +store.get("meRadius", 150); const me
 function renderMe() {
   meLayer.clearLayers(); const box = $("me-info");
   if (!me) { box.textContent = "Lokalizacja wyłączona."; $("me-btn").textContent = "📍 Pokaż moją lokalizację"; $("s-me").parentElement.hidden = true; return }
-  $("me-btn").textContent = "📍 Wyłącz lokalizację"; $("s-me").parentElement.hidden = false;
+  $("me-btn").textContent = "📍 Wyłącz lokalizację"; $("s-me").parentElement.hidden = false; if (typeof drawRings === "function" && LY.rings && !ringLayer.getLayers().length) drawRings();
   L.circle([me.lat, me.lon], { radius: meRadius * 1000, color: "#38a8ff", weight: 1, dashArray: "4 6", fill: false, interactive: false }).addTo(meLayer);
   L.marker([me.lat, me.lon], { keyboard: false, interactive: false, icon: L.divIcon({ className: "", html: '<div class="memk"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }) }).addTo(meLayer);
   const act = view.filter(o => !o.areaOnly && !o.advisory && o.pos).map(o => ({ o, d: km([me.lat, me.lon], o.pos) })).sort((a, b) => a.d - b.d), n = act[0];
@@ -1184,7 +1200,7 @@ function renderMe() {
   if (n && n.d < meRadius && mode === "live") addEvent(n.d < meRadius / 2 ? 2 : 1, `${TM(n.o.type).n} ${Math.round(n.d)} km od Ciebie`, place(n.o) + "." + shTxt, "me:" + n.o.id + ":" + (n.d < meRadius / 2 ? 2 : 1), n.o.pos, `<svg viewBox="0 0 24 24">${SVG[n.o.type] || SVG.unknown}</svg>`);
 }
 $("me-btn").onclick = () => {
-  if (me) { me = null; store.set("me", null); renderMe(); return }
+  if (me) { me = null; store.set("me", null); renderMe(); if (typeof drawRings === "function") drawRings(); return }
   if (!navigator.geolocation) { $("me-info").textContent = "Ta przeglądarka nie udostępnia lokalizacji."; return }
   $("me-info").textContent = "Pobieranie lokalizacji…";
   navigator.geolocation.getCurrentPosition(p => { me = { lat: +p.coords.latitude.toFixed(3), lon: +p.coords.longitude.toFixed(3) }; store.set("me", me); renderMe(); userMoved = true; map.flyTo([me.lat, me.lon], 7, { duration: .8 }) },
@@ -1287,39 +1303,42 @@ let shState = null; const shLayer = L.layerGroup().addTo(map), shMk = [];
 // zapytanie wysyłane prosto z przeglądarki do Overpass (OpenStreetMap); serwer aplikacji jest zapasem
 const OVP = ["https://overpass-api.de/api/interpreter", "https://overpass.private.coffee/api/interpreter", "https://maps.mail.ru/osm/tools/overpass/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
 function ovpQuery(lat, lon) {
-  const a = `(around:3000,${lat.toFixed(4)},${lon.toFixed(4)})`;
-  return `[out:json][timeout:20];(nwr${a}["amenity"="shelter"]["shelter_type"~"bomb|air_raid|civil|underground",i];nwr${a}["air_raid_shelter"="yes"];nwr${a}["emergency"~"^(shelter|air_raid_shelter)$"];nwr${a}["building"="bunker"][!"historic"][!"ruins"][!"disused"];nwr${a}["railway"="station"]["station"="subway"];nwr${a}["amenity"="parking"]["parking"="underground"];way${a}["highway"~"footway|pedestrian"]["tunnel"="yes"]["layer"~"^-"];);out center tags 400;`
+  const dy = .027, dx = .027 / Math.cos(lat * R), b = `(${(lat - dy).toFixed(4)},${(lon - dx).toFixed(4)},${(lat + dy).toFixed(4)},${(lon + dx).toFixed(4)})`;
+  return `[out:json][timeout:25];(nwr["amenity"="shelter"]["shelter_type"~"bomb|air_raid|civil|underground"]${b};nwr["air_raid_shelter"="yes"]${b};nwr["emergency"~"shelter"]${b};nwr["building"="bunker"]${b};nwr["military"="bunker"]${b};nwr["station"="subway"]${b};nwr["parking"="underground"]${b};way["tunnel"="yes"]["highway"~"footway|pedestrian"]${b};);out center tags 300;`
 }
 function shKind(t) {
   if (/bomb|air_raid|civil/i.test(t.shelter_type || "") || t.air_raid_shelter === "yes" || /shelter/.test(t.emergency || "")) return "schron";
   if (t.building === "bunker") return "bunkier"; if (t.station === "subway") return "metro"; if (t.parking === "underground") return "parking"; if (t.tunnel === "yes") return "przejście"; return "inne"
 }
 const SHRANK = { schron: 0, bunkier: 1, metro: 2, "przejście": 3, parking: 4, inne: 5 };
-async function sheltersDirect(lat, lon) {
-  const q = ovpQuery(lat, lon); let last = "";
-  for (const ep of OVP) {
-    const c = new AbortController(), tm = setTimeout(() => c.abort(), 25000);
-    try {
-      const r = await fetch(ep, { method: "POST", body: "data=" + encodeURIComponent(q), headers: { "Content-Type": "application/x-www-form-urlencoded" }, signal: c.signal });
-      if (!r.ok) throw new Error("HTTP " + r.status); const d = await r.json(); clearTimeout(tm);
-      const seen = new Set(), items = [];
-      for (const e of d.elements || []) {
-        const la = e.lat ?? (e.center && e.center.lat), lo = e.lon ?? (e.center && e.center.lon); if (la == null) continue;
-        const t = e.tags || {}, k = shKind(t); if (t.access === "private" || t.access === "no") continue;
-        const name = t.name || t["name:pl"] || t.operator || "", key = k + ":" + (name || la.toFixed(4) + lo.toFixed(4)); if (k === "metro" && seen.has(key)) continue; seen.add(key);
-        items.push({ k, name, lat: la, lon: lo, d: km([lat, lon], [la, lo]), cap: +t.capacity || null, osm: e.type + "/" + e.id })
-      }
-      items.sort((a, b) => (a.d + SHRANK[a.k] * .25) - (b.d + SHRANK[b.k] * .25));
-      return { t: Date.now(), r: 3000, items: items.slice(0, 40) }
-    } catch (e) { clearTimeout(tm); last = e.name === "AbortError" ? "serwer nie odpowiada" : String(e.message || e) }
+function parseShelters(d, lat, lon) {
+  const seen = new Set(), items = [];
+  for (const e of d.elements || []) {
+    const la = e.lat ?? (e.center && e.center.lat), lo = e.lon ?? (e.center && e.center.lon); if (la == null) continue;
+    const t = e.tags || {}; if (t.access === "private" || t.access === "no" || t.ruins === "yes" || t.historic || t.disused === "yes") continue;
+    const k = shKind(t), name = t.name || t["name:pl"] || t.operator || "", key = k + ":" + (name || la.toFixed(4) + lo.toFixed(4)); if (seen.has(key) && name) continue; seen.add(key);
+    items.push({ k, name, lat: la, lon: lo, d: km([lat, lon], [la, lo]), cap: +t.capacity || null, osm: e.type + "/" + e.id })
   }
-  throw new Error(last || "OpenStreetMap niedostępny")
+  items.sort((a, b) => (a.d + SHRANK[a.k] * .25) - (b.d + SHRANK[b.k] * .25));
+  return { t: Date.now(), r: 3000, items: items.slice(0, 40) }
+}
+// wszystkie serwery Overpass naraz; wygrywa pierwsza poprawna odpowiedź
+function sheltersDirect(lat, lon, onErr) {
+  const q = ovpQuery(lat, lon), ctl = OVP.map(() => new AbortController());
+  const tries = OVP.map((ep, i) => {
+    const tm = setTimeout(() => ctl[i].abort(), 40000);
+    return fetch(ep + "?data=" + encodeURIComponent(q), { signal: ctl[i].signal }).then(async r => { if (!r.ok) throw new Error("HTTP " + r.status); const d = await r.json(); if (d.remark && !(d.elements || []).length && /timeout|runtime error/i.test(d.remark)) throw new Error("przeciążony"); return d })
+      .catch(e => { const m = ep.split("/")[2] + ": " + (e.name === "AbortError" ? "nie odpowiada" : e.message || e); onErr && onErr(m); throw new Error(m) }).finally(() => clearTimeout(tm))
+  });
+  return Promise.any(tries).then(d => { ctl.forEach(c => c.abort()); return parseShelters(d, lat, lon) }).catch(e => { throw new Error(e.errors ? e.errors.map(x => x.message).join("; ") : e.message) })
 }
 async function sheltersAt(lat, lon) {
   const ck = "sh:" + lat.toFixed(2) + "," + lon.toFixed(2), c = store.get(ck, null); if (c && Date.now() - c.t < 864e5) return c;
-  let d; try { d = await sheltersDirect(lat, lon) } catch (e) { if (!WORKER) throw e; d = await fetchJSON(`${WORKER}/api/shelters?lat=${lat.toFixed(3)}&lon=${lon.toFixed(3)}`, 45000); if (d.error) throw e }
+  let d; try { d = await sheltersDirect(lat, lon, m => { const el = $("sh-prog"); if (el) el.textContent = "Nie odpowiada: " + m.split(":")[0] + ". Próbuję pozostałych…" }) }
+  catch (e) { throw e }
   if ((d.items || []).length) store.set(ck, d); return d
 }
+const shFallback = at => `<div class="shfb"><a class="btn" href="https://www.google.com/maps/search/schron/@${at[0].toFixed(5)},${at[1].toFixed(5)},15z" target="_blank" rel="noopener">Szukaj „schron” w Mapach Google</a><a class="btn" href="https://www.google.com/maps/search/parking+podziemny/@${at[0].toFixed(5)},${at[1].toFixed(5)},15z" target="_blank" rel="noopener">Parkingi podziemne w pobliżu</a></div>`;
 const walk = d => Math.max(1, Math.round(d / 4.8 * 60));
 const fmtD = d => d < 1 ? Math.round(d * 1000 / 10) * 10 + " m" : d.toFixed(1).replace(".", ",") + " km";
 function shPopup(x) {
@@ -1333,16 +1352,17 @@ function renderShelters() {
   L.circle(shState.at, { radius: 3000, color: "#3be39b", weight: 1, dashArray: "3 6", fill: false, interactive: false }).addTo(shLayer);
   for (const x of items) { const k = SHK[x.k] || SHK.inne; shMk.push(L.marker([x.lat, x.lon], { keyboard: false, zIndexOffset: 500, icon: L.divIcon({ className: "", html: `<div class="shmk" style="--sc:${k.c}">${k.i}</div>`, iconSize: [26, 26], iconAnchor: [13, 26], popupAnchor: [0, -24] }) }).bindPopup(shPopup(x), { className: "tip-pop" }).addTo(shLayer)) }
   $("sh-list").innerHTML = items.length ? items.slice(0, 25).map((x, i) => { const k = SHK[x.k] || SHK.inne; return `<button class="sh" data-i="${i}" style="--sc:${k.c}"><span class="si">${k.i}</span><b>${esc(x.name || k.n)}</b><span class="d">${fmtD(x.d)}</span><span>${k.n} · ${walk(x.d)} min pieszo</span></button>` }).join("")
-    : '<span class="empty">W promieniu 3 km nie ma miejsc oznaczonych w OpenStreetMap. Szukaj piwnicy w swoim budynku albo sprawdź oficjalną mapę PSP poniżej.</span>';
+    : `<span class="empty">W promieniu 3 km nie ma miejsc oznaczonych w OpenStreetMap. Szukaj piwnicy w swoim budynku albo sprawdź oficjalną mapę PSP poniżej.</span>${shFallback(shState.at)}`;
 }
 async function findShelters(useMe) {
   const go = at => {
     $("sh-list").innerHTML = '<span class="empty">Szukam miejsc schronienia…</span>';
-    $("sh-list").innerHTML = '<span class="empty">Szukam miejsc schronienia w OpenStreetMap… (może potrwać do pół minuty)</span>';
+    shState = { at, items: [] }; renderShelters(); $("sh-n").textContent = "szukam…";
+    $("sh-list").innerHTML = '<div class="shload"><i></i><span>Szukam schronów, metra, parkingów i przejść podziemnych w OpenStreetMap…<br><small id="sh-prog">Pytam 4 serwery naraz, zwykle trwa to kilka sekund.</small></span></div>';
     sheltersAt(at[0], at[1]).then(d => {
       shState = { ...d, at }; renderShelters(); userMoved = true; if (mobile()) setSheet("peek");
       const b = L.latLngBounds([at, ...(d.items || []).slice(0, 6).map(x => [x.lat, x.lon])]); map.flyToBounds(b.pad(.3), { maxZoom: 15, duration: .8 })
-    }).catch(e => { $("sh-list").innerHTML = `<span class="empty">Nie udało się pobrać miejsc schronienia (${esc(e.message || e)}). Skorzystaj z oficjalnej mapy PSP poniżej.</span>` })
+    }).catch(e => { $("sh-n").textContent = "błąd"; $("sh-list").innerHTML = `<div class="sherr"><b>Serwery OpenStreetMap teraz nie odpowiadają.</b><span>${esc(e.message || e)}</span>${shFallback(at)}<button class="btn" id="sh-retry">Spróbuj ponownie</button></div>`; $("sh-retry").onclick = () => go(at) })
   };
   if (!useMe) { const c = map.getCenter(); return go([c.lat, c.lng]) }
   if (!navigator.geolocation) return go(me ? [me.lat, me.lon] : [map.getCenter().lat, map.getCenter().lng]);
@@ -1379,6 +1399,82 @@ function renderBag() {
 $("bag").addEventListener("change", e => { const i = e.target.dataset.b; if (i == null) return; bag[i] = e.target.checked; store.set("bag", bag); renderBag() });
 renderBag();
 
+/* ---------- warstwy mapy: noc i dzień, opady, pierścienie, linijka ---------- */
+map.createPane("night"); map.getPane("night").style.zIndex = 405; map.getPane("night").style.pointerEvents = "none";
+map.createPane("rain"); map.getPane("rain").style.zIndex = 404; map.getPane("rain").style.pointerEvents = "none";
+let LY = { night: true, rain: false, alarms: true, news: true, shel: true, rings: false, ...store.get("layers", {}) };
+const nightLayer = L.layerGroup(), ringLayer = L.layerGroup();
+// granica dnia i nocy z położenia Słońca (dokładność ok. 1°)
+function nightPolygon(t = new Date()) {
+  const d = (t - Date.UTC(2000, 0, 1, 12)) / 864e5, g = (357.529 + .98560028 * d) * R, q = 280.459 + .98564736 * d;
+  const Ls = (q + 1.915 * Math.sin(g) + .02 * Math.sin(2 * g)) * R, e = (23.439 - 3.6e-7 * d) * R;
+  const dec = Math.asin(Math.sin(e) * Math.sin(Ls)), ra = Math.atan2(Math.cos(e) * Math.sin(Ls), Math.cos(Ls));
+  const gmst = (18.697374558 + 24.06570982441908 * d) % 24, subLon = ((ra / R - gmst * 15) % 360 + 540) % 360 - 180;
+  const pts = [];
+  for (let lon = -180; lon <= 180; lon += 2) { const ha = (lon - subLon) * R; pts.push([Math.atan(-Math.cos(ha) / Math.tan(dec)) / R, lon]) }
+  const pole = dec < 0 ? 90 : -90; return [...pts, [pole, 180], [pole, -180]]
+}
+function drawNight() {
+  nightLayer.clearLayers(); if (!LY.night) return;
+  const poly = nightPolygon(), dark = !lightMode();
+  for (const [w, o] of [[0, dark ? .32 : .16], [1, 0]]) if (!w) L.polygon(poly, { pane: "night", stroke: false, fillColor: dark ? "#000814" : "#1b2a4a", fillOpacity: o, interactive: false }).addTo(nightLayer);
+  L.polyline(poly.slice(0, -2), { pane: "night", color: "#ffb020", weight: 1, opacity: .45, dashArray: "2 6", interactive: false }).addTo(nightLayer);
+}
+// opady z RainViewer (ostatni obraz radarowy, odświeżany co 10 min)
+let rainLayer = null, rainT = 0;
+async function updRain() {
+  if (!LY.rain) { if (rainLayer) { map.removeLayer(rainLayer); rainLayer = null } return }
+  if (rainLayer && Date.now() - rainT < 9 * 60000) return;
+  try {
+    const m = await fetchJSON("https://api.rainviewer.com/public/weather-maps.json", 12000), f = (m.radar && m.radar.past || []).slice(-1)[0]; if (!f) throw new Error("brak danych");
+    const nl = L.tileLayer(`${m.host}${f.path}/256/{z}/{x}/{y}/4/1_1.png`, { pane: "rain", opacity: .65, maxNativeZoom: 7, maxZoom: 19, attribution: '<a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>' }).addTo(map);
+    if (rainLayer) map.removeLayer(rainLayer); rainLayer = nl; rainT = Date.now(); attrib.addTo(map);
+    $("lay-note").textContent = "Opady: radar z " + hm(f.time * 1000) + " (RainViewer).";
+  } catch (e) { $("lay-note").textContent = "Nie udało się pobrać mapy opadów."; }
+}
+// pierścienie odległości wokół mojej lokalizacji
+function drawRings() {
+  ringLayer.clearLayers(); if (!LY.rings || !me) return;
+  for (const r of [25, 50, 100, 200, 300]) {
+    L.circle([me.lat, me.lon], { radius: r * 1000, color: "#38e1ff", weight: 1, opacity: .55, dashArray: "2 5", fill: false, interactive: false }).addTo(ringLayer);
+    L.marker(move([me.lat, me.lon], 0, r), { interactive: false, keyboard: false, icon: L.divIcon({ className: "", html: `<span class="ringlbl">${r} km</span>`, iconSize: null, iconAnchor: [14, 6] }) }).addTo(ringLayer)
+  }
+}
+function applyLayers() {
+  const tog = (l, on) => on ? (map.hasLayer(l) || l.addTo(map)) : map.hasLayer(l) && map.removeLayer(l);
+  tog(nightLayer, LY.night); drawNight(); tog(alertLayer, LY.alarms); tog(areaLayer, LY.alarms); tog(newsLayer, LY.news); tog(shLayer, LY.shel); tog(ringLayer, LY.rings); drawRings(); updRain();
+  if (milOn !== LY.mil) { milOn = LY.mil; store.set("milOn", milOn); $("mil-on").checked = milOn; if (mode === "live") tog(milLayer, milOn); renderMil() }
+  if (heatOn !== LY.heat) { heatOn = LY.heat; store.set("heatOn", heatOn); $("heat-on").checked = heatOn; if (heatOn && !stats) loadStats(); drawHeat() }
+  for (const c of document.querySelectorAll("#lay [data-ly]")) c.checked = !!LY[c.dataset.ly];
+  for (const b of document.querySelectorAll("#map-style button")) b.setAttribute("aria-pressed", b.dataset.st === mapStyle);
+}
+LY.mil = milOn; LY.heat = heatOn;
+$("lay").addEventListener("change", e => { const k = e.target.dataset.ly; if (!k) return; LY[k] = e.target.checked; store.set("layers", { night: LY.night, rain: LY.rain, alarms: LY.alarms, news: LY.news, shel: LY.shel, rings: LY.rings });
+  if (k === "rings" && LY.rings && !me) { $("lay-note").textContent = "Pierścienie rysuję wokół Twojej lokalizacji – zezwól na nią."; $("me-btn").click() } applyLayers() });
+$("map-style").addEventListener("click", e => { const b = e.target.closest("button[data-st]"); if (!b) return; mapStyle = b.dataset.st; store.set("mapStyle", mapStyle); updStreets(); applyLayers();
+  if (mapStyle !== "radar" && map.getZoom() < 6) { userMoved = true; map.flyTo(map.getCenter(), 6.5, { duration: .6 }) } });
+$("mil-on").addEventListener("change", () => { LY.mil = milOn; applyLayers() }); $("heat-on").addEventListener("change", () => { LY.heat = heatOn; applyLayers() });
+const toggleLay = force => { const h = force != null ? !force : !$("lay").hidden; $("lay").hidden = h; $("lay-btn").setAttribute("aria-pressed", !h) };
+$("lay-btn").onclick = () => toggleLay(); $("lay-x").onclick = () => toggleLay(false);
+map.on("click", () => { if (!$("lay").hidden && !ruler.on) toggleLay(false) });
+// linijka
+const ruler = { on: false, pts: [], layer: L.layerGroup().addTo(map) };
+function drawRuler() {
+  ruler.layer.clearLayers(); let tot = 0;
+  ruler.pts.forEach((p, i) => { L.marker(p, { interactive: false, keyboard: false, icon: L.divIcon({ className: "", html: '<div class="rdot"></div>', iconSize: [12, 12], iconAnchor: [6, 6] }) }).addTo(ruler.layer); if (i) tot += km(ruler.pts[i - 1], p) });
+  if (ruler.pts.length > 1) {
+    L.polyline(ruler.pts, { color: "#38e1ff", weight: 3, dashArray: "8 6", interactive: false }).addTo(ruler.layer);
+    L.marker(ruler.pts[ruler.pts.length - 1], { interactive: false, keyboard: false, icon: L.divIcon({ className: "", html: `<div class="rl">${tot < 10 ? tot.toFixed(2).replace(".", ",") : Math.round(tot)} km</div>`, iconSize: null, iconAnchor: [0, 0] }) }).addTo(ruler.layer)
+  }
+  const last = ruler.pts.length > 1 ? km(ruler.pts[ruler.pts.length - 2], ruler.pts[ruler.pts.length - 1]) : 0;
+  $("ruler-txt").innerHTML = ruler.pts.length < 2 ? "Stuknij na mapie punkty, aby zmierzyć odległość." : `Razem <b>${tot < 10 ? tot.toFixed(2).replace(".", ",") : Math.round(tot)} km</b> · odcinek ${Math.round(last)} km · dron ~${Math.round(tot / 180 * 60)} min, pocisk ~${Math.round(tot / 800 * 60)} min`;
+}
+function setRuler(on) { ruler.on = on; $("rulerbar").hidden = !on; $("ruler-btn").setAttribute("aria-pressed", on); map.getContainer().style.cursor = on ? "crosshair" : ""; if (!on) { ruler.pts = []; drawRuler() } else { toggleLay(false); if (mobile()) setSheet("peek"); drawRuler() } }
+$("ruler-btn").onclick = () => setRuler(!ruler.on); $("ruler-x").onclick = () => setRuler(false); $("ruler-clear").onclick = () => { ruler.pts = []; drawRuler() };
+map.on("click", e => { if (!ruler.on) return; ruler.pts.push([e.latlng.lat, e.latlng.lng]); drawRuler() });
+$("loc-btn").onclick = () => { if (me) { userMoved = true; map.flyTo([me.lat, me.lon], Math.max(map.getZoom(), 8), { duration: .8 }) } else $("me-btn").click() };
+applyLayers(); setInterval(() => { if (!document.hidden) { if (LY.night) drawNight(); updRain() } }, 60000);
+
 /* ---------- dolne menu na telefonie ---------- */
 function syncNav() {
   const cur = side.dataset.s === "peek" ? "map" : ["kom", "hist", "ust"].includes(curTab) ? "more" : curTab;
@@ -1396,12 +1492,15 @@ $("more").addEventListener("click", e => {
   const b = e.target.closest("button[data-go]"); $("more").hidden = true; if (!b) return; const g = b.dataset.go;
   if (g === "share") return openShare(1);
   if (g === "theme") return $("theme-btn").click();
+  if (g === "layers") { setSheet("peek"); return toggleLay(true) }
+  if (g === "home") { setSheet("peek"); return $("b-home").click() }
+  if (g === "sound") { $("b-snd").click(); $("mb-snd").textContent = soundOn ? "włączony" : "wyłączony"; return }
   if (g === "me") { setTab("teraz"); setSheet("half"); setTimeout(() => $("me-sec").scrollIntoView({ behavior: "smooth" }), 400); return }
   setTab(g); if (side.dataset.s === "peek") setSheet("half"); syncNav()
 });
 
 /* ---------- start ---------- */
-if (mobile()) $("legend").open = false;
+if (mobile() || innerHeight < 900) $("legend").open = false;
 requestAnimationFrame(() => setTimeout(() => $("stage").classList.remove("boot"), 80));
 let rsT; addEventListener("resize", () => { clearTimeout(rsT); rsT = setTimeout(() => { map.invalidateSize(); if (!userMoved) map.fitBounds(HOME(), homePad()); drawTrack() }, 200) });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && selected) select(null) });

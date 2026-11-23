@@ -42,7 +42,7 @@ Lokalnie: `npm install`, potem `npm run dev`.
 - Doniesienia o zdarzeniach w Polsce: kanały RSS TVN24, RMF24, Polsat News
 - Położenie wsi: [OpenStreetMap](https://www.openstreetmap.org/copyright) (Nominatim), miasta: [GeoNames](https://www.geonames.org/) (CC BY 4.0)
 - Samoloty wojskowe: [adsb.fi](https://adsb.fi/) (zapasowo [adsb.lol](https://adsb.lol/)), tylko samoloty nadające ADS-B
-- Miejsca schronienia i ulice po przybliżeniu: [OpenStreetMap](https://www.openstreetmap.org/copyright) (Overpass API, mapa CARTO)
+- Miejsca schronienia i ulice: [OpenStreetMap](https://www.openstreetmap.org/copyright) (Overpass API, mapa CARTO); zdjęcia satelitarne: Esri World Imagery; opady: [RainViewer](https://www.rainviewer.com/)
 - Granice: Natural Earth; ikony zdarzeń: [Tabler Icons](https://tabler.io/icons) (MIT)
 
 ## Ważne

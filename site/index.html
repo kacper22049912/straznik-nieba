@@ -581,6 +581,49 @@ h2 .badge{background:var(--red);color:#fff;border-radius:999px;padding:2px 7px;f
   .side .scroll{padding-bottom:20px}
 }
 @media (max-width:900px) and (max-height:500px){:root{--nav:46px}.bnav button span{display:none}}
+
+/* przyciski mapy i panel warstw */
+.mapbtns{position:absolute;z-index:1000;left:max(14px,env(safe-area-inset-left,0px));top:calc(var(--hud-b,96px) + 10px);display:grid;gap:6px}
+.mapbtns button{width:40px;height:40px;border-radius:12px;border:1px solid var(--edge-hi);background:var(--glass-hi);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);color:var(--fg);display:grid;place-items:center;cursor:pointer;box-shadow:0 6px 18px var(--shadow)}
+.mapbtns button svg{width:21px;height:21px}.mapbtns button[aria-pressed="true"]{color:var(--radar);border-color:var(--radar);box-shadow:0 0 0 1px var(--radar),0 0 16px var(--radar-soft)}
+.lay{position:absolute;z-index:1150;left:calc(max(14px,env(safe-area-inset-left,0px)) + 50px);top:calc(var(--hud-b,96px) + 10px);width:min(320px,calc(100vw - 90px));max-height:calc(100dvh - var(--hud-b,96px) - 140px);overflow:auto;padding:12px;display:grid;gap:10px;border-radius:16px}
+.lay[hidden]{display:none}
+.lh{display:flex;justify-content:space-between;align-items:center}.lh b{font:700 13px/1 var(--f-disp);letter-spacing:.12em;text-transform:uppercase}.lh button{border:0;background:none;color:var(--muted);font-size:16px;cursor:pointer}
+.styles{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.styles button{display:grid;gap:5px;justify-items:center;padding:6px;border-radius:12px;border:1px solid var(--edge);background:var(--tint-1);color:var(--fg);font:600 11.5px var(--f-body);cursor:pointer}
+.styles button[aria-pressed="true"]{border-color:var(--radar);box-shadow:0 0 0 1px var(--radar);color:var(--radar)}
+.pv{display:block;width:100%;aspect-ratio:16/10;border-radius:8px}
+.pv-radar{background:radial-gradient(circle at 60% 50%,transparent 20%,rgba(56,225,255,.35) 21%,transparent 23%,transparent 40%,rgba(56,225,255,.3) 41%,transparent 43%),linear-gradient(135deg,#0c1626,#07101f)}
+.pv-ulice{background:linear-gradient(90deg,transparent 46%,#6b7a93 46% 50%,transparent 50%),linear-gradient(0deg,transparent 30%,#55657d 30% 33%,transparent 33%),linear-gradient(35deg,transparent 60%,#4a5870 60% 62%,transparent 62%),#1b2230}
+.pv-sat{background:radial-gradient(circle at 30% 40%,#4d6b3a,transparent 45%),radial-gradient(circle at 70% 70%,#6b5a3a,transparent 45%),radial-gradient(circle at 80% 20%,#2c4a5e,transparent 40%),#3a4a2e}
+.lgrid{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+.lgrid label{display:flex;align-items:center;gap:7px;padding:7px 8px;border-radius:10px;background:var(--tint-1);border:1px solid var(--edge);font-size:12px;cursor:pointer;line-height:1.2}
+.lgrid input{accent-color:var(--radar);flex:none}
+.rulerbar{position:absolute;z-index:1150;left:50%;transform:translateX(-50%);top:calc(var(--hud-b,96px) + 10px);display:flex;align-items:center;gap:8px;padding:8px 8px 8px 14px;border-radius:14px;font-size:13px;max-width:calc(100vw - 24px)}
+.rulerbar[hidden]{display:none}.rulerbar button{border:1px solid var(--edge-hi);background:var(--tint-2);color:var(--fg);border-radius:9px;padding:6px 10px;font:600 12px var(--f-body);cursor:pointer;flex:none}
+.rulerbar b{color:var(--radar);font-family:var(--f-mono)}
+.rl{font:700 11px/1 var(--f-mono);background:var(--label-bg);color:var(--radar);border:1px solid var(--radar);padding:3px 6px;border-radius:6px;white-space:nowrap;transform:translate(8px,-50%)}
+.rdot{width:12px;height:12px;border-radius:50%;background:var(--radar);border:2px solid #fff;box-shadow:0 0 10px var(--radar)}
+.ringlbl{font:600 10px var(--f-mono);color:var(--radar);text-shadow:0 0 4px var(--sea)}
+.map-sat .city,.map-sat .country{text-shadow:0 0 4px #000,0 0 8px #000}
+@media (max-width:900px){
+  .mapbtns{left:auto;right:max(8px,env(safe-area-inset-right,0px));top:calc(var(--hud-b,110px) + 8px)}
+  .mapbtns button{width:38px;height:38px}
+  .lay{left:max(8px,env(safe-area-inset-left,0px));right:calc(max(8px,env(safe-area-inset-right,0px)) + 46px);width:auto;top:calc(var(--hud-b,110px) + 8px);max-height:calc(100dvh - var(--hud-b,110px) - var(--bottom) - 20px)}
+  .rulerbar{top:auto;bottom:calc(var(--bottom) + 8px);font-size:12px}
+  :root{--peek:46px}
+}
+@media (max-width:900px) and (max-height:500px){.mapbtns{grid-auto-flow:column;top:auto;bottom:calc(var(--bottom) + 4px);right:auto;left:max(8px,env(safe-area-inset-left,0px))}.mapbtns button{width:34px;height:34px}}
+/* laptopy: krótsze napisy w liczbach, by nic się nie ucinało */
+@media (min-width:901px) and (max-width:1500px){.stat{min-width:0;padding-left:10px;padding-right:10px}.stat span{font-size:9px;letter-spacing:.05em}.stat .lf{display:none}.stat .ls{display:inline}}
+@media (min-width:901px) and (max-width:1180px){.tabs button{font-size:10px;padding:7px 4px;letter-spacing:0}}
+
+.shload{display:flex;gap:12px;align-items:center;padding:12px;border-radius:12px;background:var(--tint-1);border:1px solid var(--edge);font-size:12.5px;line-height:1.4}
+.shload i{width:22px;height:22px;flex:none;border-radius:50%;border:3px solid var(--radar-soft);border-top-color:var(--radar);animation:spin 1s linear infinite}
+.shload small{color:var(--muted)}
+.sherr{display:grid;gap:8px;padding:12px;border-radius:12px;border:1px solid rgba(255,176,32,.4);background:rgba(255,176,32,.07);font-size:12.5px}
+.sherr span{color:var(--muted);font:500 10.5px/1.4 var(--f-mono);word-break:break-word}
+.shfb{display:grid;gap:6px;margin-top:8px}.shfb .btn{text-align:center;text-decoration:none}
 </style>
 </head>
 <body>
@@ -612,6 +655,32 @@ h2 .badge{background:var(--red);color:#fff;border-radius:999px;padding:2px 7px;f
 
     <div class="hud alerts" id="alerts" aria-live="assertive"></div>
     <div class="hud histflag" id="histflag" hidden><span id="histtxt">Historia</span><button id="hist-back">Wróć na żywo</button></div>
+
+    <div class="hud mapbtns" id="mapbtns">
+      <button id="lay-btn" title="Warstwy mapy" aria-label="Warstwy mapy"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4l-8 4l8 4l8 -4l-8 -4"/><path d="M4 12l8 4l8 -4"/><path d="M4 16l8 4l8 -4"/></svg></button>
+      <button id="ruler-btn" title="Linijka: zmierz odległość" aria-label="Linijka"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h14a1 1 0 0 1 1 1v5a1 1 0 0 1 -1 1h-7a1 1 0 0 0 -1 1v7a1 1 0 0 1 -1 1h-5a1 1 0 0 1 -1 -1v-14a1 1 0 0 1 1 -1"/><path d="M4 8l2 0"/><path d="M4 12l3 0"/><path d="M4 16l2 0"/><path d="M8 4l0 2"/><path d="M12 4l0 3"/><path d="M16 4l0 2"/></svg></button>
+      <button id="loc-btn" title="Pokaż moją lokalizację" aria-label="Moja lokalizacja"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0 -6 0"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><path d="M12 12m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/></svg></button>
+    </div>
+    <div class="hud lay glass" id="lay" hidden>
+      <div class="lh"><b>Mapa</b><button id="lay-x" aria-label="Zamknij">✕</button></div>
+      <div class="styles" id="map-style">
+        <button data-st="radar"><i class="pv pv-radar"></i>Radar</button>
+        <button data-st="ulice"><i class="pv pv-ulice"></i>Ulice</button>
+        <button data-st="sat"><i class="pv pv-sat"></i>Satelita</button>
+      </div>
+      <div class="lgrid">
+        <label><input type="checkbox" data-ly="night"><span>🌙 Noc i dzień</span></label>
+        <label><input type="checkbox" data-ly="rain"><span>🌧️ Opady na żywo</span></label>
+        <label><input type="checkbox" data-ly="alarms"><span>🚨 Alarmy w Ukrainie</span></label>
+        <label><input type="checkbox" data-ly="news"><span>📍 Zdarzenia w Polsce</span></label>
+        <label><input type="checkbox" data-ly="mil"><span>✈️ Samoloty wojskowe</span></label>
+        <label><input type="checkbox" data-ly="shel"><span>🛡️ Schrony</span></label>
+        <label><input type="checkbox" data-ly="heat"><span>🔥 Mapa cieplna tras</span></label>
+        <label><input type="checkbox" data-ly="rings"><span>◎ Pierścienie odległości</span></label>
+      </div>
+      <p class="note" id="lay-note"></p>
+    </div>
+    <div class="hud rulerbar glass" id="rulerbar" hidden><span id="ruler-txt">Stuknij na mapie punkty, aby zmierzyć odległość.</span><button id="ruler-clear">Wyczyść</button><button id="ruler-x">Gotowe</button></div>
 
     <details class="hud legend glass" id="legend" open>
       <summary>Legenda</summary>
@@ -791,6 +860,9 @@ h2 .badge{background:var(--red);color:#fff;border-radius:999px;padding:2px 7px;f
   <button data-go="me"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"/><path d="M17.657 16.657l-4.243 4.243a2 2 0 0 1 -2.827 0l-4.244 -4.243a8 8 0 1 1 11.314 0z"/></svg><b>Moja okolica</b><span>alert w promieniu</span></button>
   <button data-go="share"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0 -6 0"/><path d="M18 6m-3 0a3 3 0 1 0 6 0a3 3 0 1 0 -6 0"/><path d="M18 18m-3 0a3 3 0 1 0 6 0a3 3 0 1 0 -6 0"/><path d="M8.7 10.7l6.6 -3.4"/><path d="M8.7 13.3l6.6 3.4"/></svg><b>Udostępnij</b><span>raport dnia jako obraz</span></button>
   <button data-go="ust"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4l1.4 -1.4M17 7l1.4 -1.4"/></svg><b>Ustawienia</b><span>powiadomienia, motyw</span></button>
+  <button data-go="layers"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4l-8 4l8 4l8 -4l-8 -4"/><path d="M4 12l8 4l8 -4"/><path d="M4 16l8 4l8 -4"/></svg><b>Warstwy</b><span>satelita, noc, opady</span></button>
+  <button data-go="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 12m-1 0a1 1 0 1 0 2 0a1 1 0 1 0 -2 0"/><path d="M12 12m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2"/></svg><b>Wyśrodkuj</b><span>cała mapa</span></button>
+  <button data-go="sound"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 8a5 5 0 0 1 0 8"/><path d="M17.7 5a9 9 0 0 1 0 14"/><path d="M6 15h-2a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1h2l3.5 -4.5a.8 .8 0 0 1 1.5 .5v14a.8 .8 0 0 1 -1.5 .5l-3.5 -4.5"/></svg><b>Dźwięk</b><span id="mb-snd">wyłączony</span></button>
   <button data-go="theme"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z"/></svg><b>Motyw</b><span>jasny / ciemny</span></button>
 </div></div>
 <div id="share" hidden role="dialog" aria-label="Udostępnij statystyki"><div class="box">
